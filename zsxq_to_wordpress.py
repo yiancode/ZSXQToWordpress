@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""
+知识星球到WordPress同步工具
+主程序入口
+"""
+import argparse
+import logging
+import sys
+import time
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+from config_manager import Config, ConfigError
+from zsxq_client import ZsxqClient, ZsxqAPIError
+from wordpress_client import WordPressClient, WordPressError
+from qiniu_uploader import QiniuUploader
+from content_processor import ContentProcessor
+from sync_state import SyncState, SyncStateError
+
+
+def setup_logging(verbose: bool = False):
+    """设置日志配置
+    
+    Args:
+        verbose: 是否显示详细日志
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    
+    # 设置日志格式
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(level)
+    
+    # 文件处理器
+    file_handler = logging.FileHandler('zsxq_sync.log', encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # 配置根日志器
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+
+class ZsxqToWordPressSync:
+    """知识星球到WordPress同步器"""
+    
+    def __init__(self, config_path: str = "config.json"):
+        """初始化同步器
+        
+        Args:
+            config_path: 配置文件路径
+        """
+        self.logger = logging.getLogger(__name__)
+        
+        # 加载配置
+        self.config = Config(config_path)
+        try:
+            self.config.load()
+            self.logger.info("配置文件加载成功")
+        except ConfigError as e:
+            self.logger.error(f"配置错误: {e}")
+            sys.exit(1)
+            
+        # 初始化各个组件
+        self._init_components()
+        
+    def _init_components(self):
+        """初始化各个组件"""
+        # 知识星球客户端
+        self.zsxq_client = ZsxqClient(
+            access_token=self.config.zsxq['access_token'],
+            user_agent=self.config.zsxq['user_agent'],
+            group_id=self.config.zsxq['group_id'],
+            max_retries=self.config.sync['max_retries'],
+            delay_seconds=self.config.sync['delay_seconds']
+        )
+        
+        # WordPress客户端
+        self.wp_client = WordPressClient(
+            url=self.config.wordpress['url'],
+            username=self.config.wordpress['username'],
+            password=self.config.wordpress['password']
+        )
+        
+        # 七牛云上传器（可选）
+        self.qiniu_uploader = None
+        if self.config.has_qiniu():
+            self.qiniu_uploader = QiniuUploader(
+                access_key=self.config.qiniu['access_key'],
+                secret_key=self.config.qiniu['secret_key'],
+                bucket=self.config.qiniu['bucket'],
+                domain=self.config.qiniu['domain']
+            )
+            self.logger.info("七牛云配置已启用")
+        else:
+            self.logger.warning("七牛云未配置，图片将使用原始链接")
+            
+        # 内容处理器
+        self.content_processor = ContentProcessor()
+        
+        # 同步状态管理
+        self.sync_state = SyncState()
+        
+    def validate_connections(self) -> bool:
+        """验证所有连接
+        
+        Returns:
+            是否所有连接都有效
+        """
+        self.logger.info("开始验证连接...")
+        
+        # 验证知识星球连接
+        if not self.zsxq_client.validate_connection():
+            self.logger.error("无法连接到知识星球，请检查access_token和group_id")
+            return False
+        self.logger.info("✓ 知识星球连接成功")
+        
+        # 验证WordPress连接
+        if not self.wp_client.validate_connection():
+            self.logger.error("无法连接到WordPress，请检查URL、用户名和密码")
+            return False
+        self.logger.info("✓ WordPress连接成功")
+        
+        # 验证七牛云（如果配置了）
+        if self.qiniu_uploader:
+            if not self.qiniu_uploader.validate_config():
+                self.logger.warning("七牛云配置验证失败，将使用原始图片链接")
+                self.qiniu_uploader = None
+            else:
+                self.logger.info("✓ 七牛云配置验证成功")
+                
+        return True
+        
+    def sync_topic(self, topic: Dict[str, Any]) -> bool:
+        """同步单个主题
+        
+        Args:
+            topic: 主题数据
+            
+        Returns:
+            是否同步成功
+        """
+        topic_id = str(topic.get('topic_id', ''))
+        
+        # 检查是否已同步
+        if self.sync_state.is_synced(topic_id):
+            self.logger.info(f"主题 {topic_id} 已同步，跳过")
+            return False
+            
+        try:
+            # 处理内容
+            article = self.content_processor.process_topic(topic)
+            self.logger.info(f"处理主题: {article['title']}")
+            
+            # 检查WordPress中是否已存在相同标题的文章
+            if self.wp_client.post_exists(article['title']):
+                self.logger.warning(f"WordPress中已存在相同标题的文章: {article['title']}")
+                # 仍然标记为已同步，避免下次重复检查
+                self.sync_state.mark_synced(
+                    topic_id,
+                    'duplicate',
+                    article['title'],
+                    article['create_time']
+                )
+                return False
+                
+            # 处理图片
+            processed_images = {}
+            if article['images'] and self.qiniu_uploader:
+                self.logger.info(f"处理 {len(article['images'])} 张图片...")
+                for img_url in article['images']:
+                    new_url = self.qiniu_uploader.process_image(img_url)
+                    processed_images[img_url] = new_url
+                    
+            # 格式化最终内容
+            final_content = self.content_processor.format_article_with_images(
+                article, processed_images
+            )
+            
+            # 发布到WordPress
+            wp_id = self.wp_client.create_post(
+                title=article['title'],
+                content=final_content,
+                categories=article['categories'],
+                tags=article['tags']
+            )
+            
+            # 标记为已同步
+            self.sync_state.mark_synced(
+                topic_id,
+                wp_id,
+                article['title'],
+                article['create_time']
+            )
+            
+            self.logger.info(f"✓ 成功同步: {article['title']} (WP ID: {wp_id})")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"同步主题 {topic_id} 时发生错误: {e}")
+            return False
+            
+    def sync_full(self):
+        """执行全量同步"""
+        self.logger.info("开始执行全量同步...")
+        
+        # 获取所有主题
+        try:
+            topics = self.zsxq_client.get_all_topics(
+                batch_size=self.config.sync['batch_size']
+            )
+            self.logger.info(f"获取到 {len(topics)} 个主题")
+        except ZsxqAPIError as e:
+            self.logger.error(f"获取主题失败: {e}")
+            return
+            
+        # 同步统计
+        stats = {
+            'total': len(topics),
+            'success': 0,
+            'failed': 0,
+            'skipped': 0
+        }
+        
+        # 逐个同步
+        for i, topic in enumerate(topics, 1):
+            self.logger.info(f"处理进度: {i}/{stats['total']}")
+            
+            result = self.sync_topic(topic)
+            if result:
+                stats['success'] += 1
+            elif self.sync_state.is_synced(str(topic.get('topic_id', ''))):
+                stats['skipped'] += 1
+            else:
+                stats['failed'] += 1
+                
+            # 保存状态（每处理10个或最后一个时保存）
+            if i % 10 == 0 or i == stats['total']:
+                self.sync_state.save()
+                
+        # 更新最后同步时间
+        self.sync_state.update_last_sync_time()
+        
+        # 记录同步结果
+        self.sync_state.add_sync_record(stats)
+        self.sync_state.save()
+        
+        # 显示统计
+        self.logger.info(
+            f"\n全量同步完成！\n"
+            f"总计: {stats['total']}\n"
+            f"成功: {stats['success']}\n"
+            f"跳过: {stats['skipped']}\n"
+            f"失败: {stats['failed']}"
+        )
+        
+    def sync_incremental(self):
+        """执行增量同步"""
+        self.logger.info("开始执行增量同步...")
+        
+        # 获取最后同步时间
+        last_sync_time = self.sync_state.get_last_sync_time()
+        if not last_sync_time:
+            self.logger.warning("没有找到上次同步时间，将执行全量同步")
+            return self.sync_full()
+            
+        self.logger.info(f"上次同步时间: {last_sync_time}")
+        
+        # 获取新内容
+        try:
+            topics = self.zsxq_client.get_all_topics(
+                batch_size=self.config.sync['batch_size'],
+                start_time=last_sync_time
+            )
+            self.logger.info(f"获取到 {len(topics)} 个新主题")
+        except ZsxqAPIError as e:
+            self.logger.error(f"获取主题失败: {e}")
+            return
+            
+        if not topics:
+            self.logger.info("没有新内容需要同步")
+            return
+            
+        # 同步统计
+        stats = {
+            'total': len(topics),
+            'success': 0,
+            'failed': 0,
+            'skipped': 0
+        }
+        
+        # 逐个同步
+        for i, topic in enumerate(topics, 1):
+            self.logger.info(f"处理进度: {i}/{stats['total']}")
+            
+            result = self.sync_topic(topic)
+            if result:
+                stats['success'] += 1
+            elif self.sync_state.is_synced(str(topic.get('topic_id', ''))):
+                stats['skipped'] += 1
+            else:
+                stats['failed'] += 1
+                
+            # 保存状态
+            if i % 10 == 0 or i == stats['total']:
+                self.sync_state.save()
+                
+        # 更新最后同步时间
+        self.sync_state.update_last_sync_time()
+        
+        # 记录同步结果
+        self.sync_state.add_sync_record(stats)
+        self.sync_state.save()
+        
+        # 显示统计
+        self.logger.info(
+            f"\n增量同步完成！\n"
+            f"总计: {stats['total']}\n"
+            f"成功: {stats['success']}\n"
+            f"跳过: {stats['skipped']}\n"
+            f"失败: {stats['failed']}"
+        )
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description='知识星球到WordPress内容同步工具'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['full', 'incremental'],
+        default='incremental',
+        help='同步模式：full(全量) 或 incremental(增量)'
+    )
+    parser.add_argument(
+        '--config',
+        default='config.json',
+        help='配置文件路径'
+    )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='显示详细日志'
+    )
+    
+    args = parser.parse_args()
+    
+    # 设置日志
+    setup_logging(args.verbose)
+    
+    # 创建同步器
+    syncer = ZsxqToWordPressSync(args.config)
+    
+    # 验证连接
+    if not syncer.validate_connections():
+        logging.error("连接验证失败，请检查配置")
+        sys.exit(1)
+        
+    # 执行同步
+    try:
+        if args.mode == 'full':
+            syncer.sync_full()
+        else:
+            syncer.sync_incremental()
+    except KeyboardInterrupt:
+        logging.warning("\n同步被用户中断")
+    except Exception as e:
+        logging.error(f"同步过程中发生错误: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

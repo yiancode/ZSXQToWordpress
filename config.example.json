@@ -1,0 +1,23 @@
+{
+  "zsxq": {
+    "access_token": "YOUR_ACCESS_TOKEN",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "group_id": "YOUR_GROUP_ID"
+  },
+  "wordpress": {
+    "url": "https://your-site.com/xmlrpc.php",
+    "username": "your_username",
+    "password": "your_password"
+  },
+  "qiniu": {
+    "access_key": "",
+    "secret_key": "",
+    "bucket": "",
+    "domain": ""
+  },
+  "sync": {
+    "batch_size": 20,
+    "delay_seconds": 2,
+    "max_retries": 5
+  }
+}
