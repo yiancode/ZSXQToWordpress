@@ -133,11 +133,14 @@ class QiniuUploader:
             ret, info = put_file(token, key, local_path)
             
             if ret and ret.get('key') == key:
-                # 构建访问URL
+                # 构建访问URL - 始终使用HTTPS
                 if self.domain.startswith('http://') or self.domain.startswith('https://'):
                     url = f"{self.domain}/{key}"
+                    # 如果是http，转换为https
+                    if url.startswith('http://'):
+                        url = url.replace('http://', 'https://', 1)
                 else:
-                    url = f"http://{self.domain}/{key}"
+                    url = f"https://{self.domain}/{key}"
                     
                 self.logger.info(f"图片上传成功: {url}")
                 return url

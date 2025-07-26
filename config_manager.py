@@ -102,3 +102,8 @@ class Config:
             qiniu.get('bucket'),
             qiniu.get('domain')
         ])
+        
+    @property
+    def data(self) -> Dict[str, Any]:
+        """获取完整的配置数据"""
+        return self._config

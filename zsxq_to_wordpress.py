@@ -3,6 +3,7 @@
 知识星球到WordPress同步工具
 主程序入口
 """
+import os
 import argparse
 import logging
 import sys
@@ -104,7 +105,7 @@ class ZsxqToWordPressSync:
             self.logger.warning("七牛云未配置，图片将使用原始链接")
             
         # 内容处理器
-        self.content_processor = ContentProcessor()
+        self.content_processor = ContentProcessor(self.config.data)
         
         # 同步状态管理
         self.sync_state = SyncState()
@@ -172,15 +173,27 @@ class ZsxqToWordPressSync:
                 )
                 return False
                 
-            # 处理图片
+            # 处理图片 - 添加详细调试日志
             processed_images = {}
+            self.logger.debug(f"=== 图片处理调试 ===")
+            self.logger.debug(f"文章图片列表: {article['images']}")
+            self.logger.debug(f"文章图片数量: {len(article['images']) if article['images'] else 0}")
+            self.logger.debug(f"七牛云上传器状态: {'已配置' if self.qiniu_uploader else '未配置'}")
+            
             if article['images'] and self.qiniu_uploader:
                 self.logger.info(f"处理 {len(article['images'])} 张图片...")
-                for img_url in article['images']:
+                for i, img_url in enumerate(article['images']):
+                    self.logger.debug(f"处理第{i+1}张图片: {img_url}")
                     new_url = self.qiniu_uploader.process_image(img_url)
                     processed_images[img_url] = new_url
+                    self.logger.debug(f"图片处理结果: {img_url} -> {new_url}")
+            elif not article['images']:
+                self.logger.debug("没有图片需要处理")
+            elif not self.qiniu_uploader:
+                self.logger.debug("七牛云未配置，跳过图片处理")
                     
             # 格式化最终内容
+            self.logger.debug(f"开始格式化文章内容，处理后的图片映射: {processed_images}")
             final_content = self.content_processor.format_article_with_images(
                 article, processed_images
             )
@@ -214,8 +227,15 @@ class ZsxqToWordPressSync:
         
         # 获取所有主题
         try:
+            # 检查是否为测试模式（通过环境变量）
+            max_topics = None
+            if os.environ.get('ZSXQ_TEST_MODE'):
+                max_topics = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
+                self.logger.info(f"测试模式：最多同步 {max_topics} 条内容")
+                
             topics = self.zsxq_client.get_all_topics(
-                batch_size=self.config.sync['batch_size']
+                batch_size=self.config.sync['batch_size'],
+                max_topics=max_topics
             )
             self.logger.info(f"获取到 {len(topics)} 个主题")
         except ZsxqAPIError as e:

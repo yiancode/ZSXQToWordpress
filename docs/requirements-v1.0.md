@@ -236,6 +236,130 @@ python zsxq_sync.py --status
 python zsxq_sync.py --help
 ```
 
+## 定时同步部署方案
+
+### 方案一：宝塔面板计划任务（推荐）
+
+适用于部署在宝塔面板的用户，无需修改代码即可实现定时同步。
+
+**配置步骤**：
+1. 在宝塔面板创建 Python 项目，上传同步脚本
+2. 确保安装所需依赖：
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. 在"计划任务"中添加 Shell 脚本类型任务
+4. 脚本内容：
+   ```bash
+   cd /www/wwwroot/zsxq-sync
+   /usr/bin/python3 zsxq_to_wordpress.py --mode incremental >> /www/wwwlogs/zsxq_sync_cron.log 2>&1
+   ```
+5. 执行周期设置建议：
+   - 高频更新：每30分钟
+   - 常规更新：每1小时  
+   - 低频更新：每天1-2次
+
+### 方案二：守护进程脚本
+
+适用于需要更灵活控制的场景，创建 `zsxq_daemon.py` 作为常驻进程。
+
+**实现示例**：
+```python
+#!/usr/bin/env python3
+import time
+import subprocess
+import json
+import logging
+from datetime import datetime
+
+def run_sync():
+    """执行增量同步"""
+    try:
+        result = subprocess.run(
+            ['python3', 'zsxq_to_wordpress.py', '--mode', 'incremental'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            logging.info(f"同步成功: {datetime.now()}")
+        else:
+            logging.error(f"同步失败: {result.stderr}")
+    except Exception as e:
+        logging.error(f"执行同步时出错: {e}")
+
+def main():
+    # 设置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('/www/wwwlogs/zsxq_daemon.log'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # 读取配置
+    with open('daemon_config.json', 'r') as f:
+        config = json.load(f)
+    
+    interval = config.get('sync_interval', 3600)  # 默认1小时
+    
+    logging.info(f"守护进程启动，同步间隔: {interval}秒")
+    
+    while True:
+        run_sync()
+        time.sleep(interval)
+
+if __name__ == '__main__':
+    main()
+```
+
+**daemon_config.json 示例**：
+```json
+{
+  "sync_interval": 3600,
+  "log_level": "INFO"
+}
+```
+
+### 方案三：系统级定时任务
+
+对于Linux服务器，也可以使用系统的 crontab：
+
+```bash
+# 编辑 crontab
+crontab -e
+
+# 添加定时任务（每小时执行）
+0 * * * * cd /path/to/zsxq-sync && /usr/bin/python3 zsxq_to_wordpress.py --mode incremental >> sync.log 2>&1
+```
+
+### 部署配置建议
+
+**宝塔环境路径**：
+- 项目目录：`/www/wwwroot/zsxq-sync/`
+- Python路径：`/usr/bin/python3` 或 `/www/server/pyenv/versions/3.x.x/bin/python`
+- 日志文件：`/www/wwwlogs/zsxq_sync.log`
+- 状态文件：`/www/wwwroot/zsxq-sync/sync_state.json`
+
+**性能优化建议**：
+1. 在访问量低的时段执行同步（如凌晨2-6点）
+2. 设置合理的请求延迟（delay_seconds）避免触发API限制
+3. 定期清理日志文件避免占用过多空间
+4. 使用日志轮转机制管理日志文件大小
+
+**监控建议**：
+1. 设置同步失败的邮件通知
+2. 监控日志文件中的错误信息
+3. 定期检查同步状态文件的更新时间
+4. 使用宝塔的监控功能查看脚本执行情况
+
+**安全建议**：
+1. 确保配置文件权限为 600（仅所有者可读写）
+2. 不要在日志中记录敏感信息（如token、密码）
+3. 定期更新知识星球的access_token
+4. 使用HTTPS连接WordPress
+
 ## 验收标准
 
 ### 基本功能验收

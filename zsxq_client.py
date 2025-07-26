@@ -67,10 +67,13 @@ class ZsxqClient:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    if data.get('succeeded'):
+                    # 知识星球API可能不总是返回succeeded字段，需要检查code字段
+                    if data.get('succeeded', True) and data.get('code', 0) != 401:
                         return data
                     else:
-                        error_msg = data.get('msg', '未知错误')
+                        error_msg = data.get('msg') or data.get('error') or '未知错误'
+                        if data.get('code') == 401:
+                            raise ZsxqAPIError("认证失败，请检查access_token是否有效")
                         raise ZsxqAPIError(f"API返回错误: {error_msg}")
                         
                 elif response.status_code == 401:
@@ -100,8 +103,10 @@ class ZsxqClient:
             是否连接成功
         """
         try:
-            url = f"{self.BASE_URL}/groups/{self.group_id}"
-            self._make_request('GET', url)
+            # 尝试获取主题列表来验证连接
+            url = f"{self.BASE_URL}/groups/{self.group_id}/topics"
+            params = {'count': 1}
+            self._make_request('GET', url, params=params)
             return True
         except Exception as e:
             self.logger.error(f"验证连接失败: {e}")
@@ -119,8 +124,7 @@ class ZsxqClient:
         """
         url = f"{self.BASE_URL}/groups/{self.group_id}/topics"
         params = {
-            'count': min(count, 50),  # API限制最多50条
-            'scope': 'all'
+            'count': min(count, 50)  # API限制最多50条，移除scope参数
         }
         
         if end_time:
@@ -136,12 +140,14 @@ class ZsxqClient:
         return topics
         
     def get_all_topics(self, batch_size: int = 20, 
-                      start_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+                      start_time: Optional[datetime] = None,
+                      max_topics: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取所有主题（支持分页）
         
         Args:
             batch_size: 每批获取数量
             start_time: 开始时间（用于增量同步）
+            max_topics: 最大获取数量（用于测试）
             
         Returns:
             所有主题列表
@@ -151,8 +157,19 @@ class ZsxqClient:
         total_fetched = 0
         
         while True:
-            self.logger.info(f"获取第 {total_fetched + 1} - {total_fetched + batch_size} 条内容")
-            topics = self.get_topics(count=batch_size, end_time=end_time)
+            # 检查是否达到最大数量限制
+            if max_topics and len(all_topics) >= max_topics:
+                self.logger.info(f"已达到最大获取数量 {max_topics}，停止获取")
+                break
+                
+            # 计算本次批次大小
+            current_batch_size = batch_size
+            if max_topics:
+                remaining = max_topics - len(all_topics)
+                current_batch_size = min(batch_size, remaining)
+                
+            self.logger.info(f"获取第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
+            topics = self.get_topics(count=current_batch_size, end_time=end_time)
             
             if not topics:
                 break
