@@ -80,8 +80,136 @@ class WordPressClient:
         except Exception as e:
             self.logger.error(f"验证连接失败: {e}")
             return False
+    
+    def create_content_by_type(self, content_data: Dict[str, Any]) -> str:
+        """根据内容类型创建WordPress内容
+        
+        Args:
+            content_data: 内容数据，包含content_type字段
             
-    def create_post(self, title: str, content: str, 
+        Returns:
+            内容ID
+        """
+        content_type = content_data.get('content_type', 'article')
+        post_type = content_data.get('post_type', 'post')
+        
+        if content_type == 'moment' and post_type == 'moment':
+            return self._create_moment(content_data)
+        else:
+            return self._create_article(content_data)
+    
+    def _create_article(self, article_data: Dict[str, Any]) -> str:
+        """创建WordPress文章（保留原有逻辑）
+        
+        Args:
+            article_data: 文章数据
+            
+        Returns:
+            文章ID
+        """
+        return self.create_post(
+            title=article_data['title'],
+            content=article_data['content'],
+            categories=article_data.get('categories'),
+            tags=article_data.get('tags'),
+            status='publish'
+        )
+    
+    def _create_moment(self, moment_data: Dict[str, Any]) -> str:
+        """创建WordPress片刻
+        
+        Args:
+            moment_data: 片刻数据
+            
+        Returns:
+            片刻ID
+        """
+        if not self.client:
+            self.connect()
+            
+        try:
+            # 尝试创建自定义文章类型的片刻
+            post = WordPressPost()
+            post.post_type = 'moment'
+            post.title = moment_data['title']
+            post.content = moment_data['content']
+            post.post_status = 'publish'
+            post.comment_status = 'open'
+            
+            # 处理标签
+            tags = moment_data.get('tags', [])
+            if tags:
+                self.logger.debug(f"=== WordPress片刻标签处理调试 ===")
+                self.logger.debug(f"待处理标签: {tags}")
+                
+                # 确保标签存在
+                for tag_name in tags:
+                    try:
+                        self._get_or_create_tag(tag_name)
+                        self.logger.debug(f"片刻标签确认存在: {tag_name}")
+                    except Exception as e:
+                        self.logger.error(f"处理片刻标签 '{tag_name}' 时出错: {e}")
+                
+                # 为片刻设置标签
+                post.terms_names = {
+                    'post_tag': tags
+                }
+            
+            # 添加自定义字段标识这是来自知识星球的片刻
+            post.custom_fields = [
+                {
+                    'key': 'content_source',
+                    'value': 'zsxq'
+                },
+                {
+                    'key': 'content_source_type',
+                    'value': 'moment'
+                },
+                {
+                    'key': 'zsxq_topic_id',
+                    'value': moment_data.get('topic_id', '')
+                }
+            ]
+            
+            post_id = self.client.call(posts.NewPost(post))
+            self.logger.info(f"成功创建片刻: {moment_data['title']} (ID: {post_id})")
+            return str(post_id)
+            
+        except Exception as e:
+            self.logger.error(f"创建片刻失败，尝试作为普通文章创建: {e}")
+            # 如果自定义文章类型失败，回退到普通文章
+            return self._create_article_as_moment(moment_data)
+    
+    def _create_article_as_moment(self, moment_data: Dict[str, Any]) -> str:
+        """作为普通文章创建片刻（回退方案）
+        
+        Args:
+            moment_data: 片刻数据
+            
+        Returns:
+            文章ID
+        """
+        # 在标题前加上[片刻]标识
+        title = f"[片刻] {moment_data['title']}"
+        
+        # 在内容中添加片刻标识
+        content = f'<div class="moment-content">{moment_data["content"]}</div>'
+        
+        # 添加片刻相关的标签和分类
+        tags = moment_data.get('tags', [])
+        tags.append('片刻')  # 确保有片刻标签
+        
+        categories = moment_data.get('categories', ['片刻'])
+        
+        return self.create_post(
+            title=title,
+            content=content,
+            categories=categories,
+            tags=tags,
+            status='publish'
+        )
+            
+    def create_post(self, title: str, content: str,
                    categories: Optional[List[str]] = None,
                    tags: Optional[List[str]] = None,
                    status: str = 'publish') -> str:

@@ -198,13 +198,23 @@ class ZsxqToWordPressSync:
                 article, processed_images
             )
             
-            # 发布到WordPress
-            wp_id = self.wp_client.create_post(
-                title=article['title'],
-                content=final_content,
-                categories=article['categories'],
-                tags=article['tags']
-            )
+            # 发布到WordPress - 根据内容类型选择创建方法
+            if article.get('content_type') == 'moment':
+                # 创建片刻类型
+                wp_id = self.wp_client._create_moment({
+                    'title': article['title'],
+                    'content': final_content,
+                    'categories': article['categories'],
+                    'tags': article['tags']
+                })
+            else:
+                # 创建文章类型
+                wp_id = self.wp_client.create_post(
+                    title=article['title'],
+                    content=final_content,
+                    categories=article['categories'],
+                    tags=article['tags']
+                )
             
             # 标记为已同步
             self.sync_state.mark_synced(

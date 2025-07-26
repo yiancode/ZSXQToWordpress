@@ -72,6 +72,7 @@ class ZsxqClient:
                         return data
                     else:
                         error_msg = data.get('msg') or data.get('error') or '未知错误'
+                        self.logger.error(f"API响应错误，完整响应: {data}")
                         if data.get('code') == 401:
                             raise ZsxqAPIError("认证失败，请检查access_token是否有效")
                         raise ZsxqAPIError(f"API返回错误: {error_msg}")
@@ -169,7 +170,14 @@ class ZsxqClient:
                 current_batch_size = min(batch_size, remaining)
                 
             self.logger.info(f"获取第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
-            topics = self.get_topics(count=current_batch_size, end_time=end_time)
+            try:
+                topics = self.get_topics(count=current_batch_size, end_time=end_time)
+            except ZsxqAPIError as e:
+                if 'code' in str(e) and '1059' in str(e):
+                    self.logger.warning(f"API分页错误，停止获取。已获取 {len(all_topics)} 条内容")
+                    break
+                else:
+                    raise
             
             if not topics:
                 break
@@ -181,6 +189,11 @@ class ZsxqClient:
                     create_time_str = topic.get('create_time', '')
                     if create_time_str:
                         create_time = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
+                        # 确保start_time也是aware datetime
+                        if start_time.tzinfo is None:
+                            # 如果start_time是naive，假设它是UTC时间
+                            from datetime import timezone
+                            start_time = start_time.replace(tzinfo=timezone.utc)
                         if create_time <= start_time:
                             # 遇到更早的内容，停止获取
                             self.logger.info(f"遇到早于 {start_time} 的内容，停止获取")
