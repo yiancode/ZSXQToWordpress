@@ -19,8 +19,7 @@
   "sync": {
     "batch_size": 20,
     "delay_seconds": 2,
-    "max_retries": 5,
-    "sync_title": true
+    "max_retries": 5
   },
   "source": {
     "name": "YOUR_ZSXQ_GROUP_NAME",
@@ -33,10 +32,25 @@
     "topic_settings": {
       "category": "主题",
       "max_title_length": 30,
-      "title_prefix": "[主题]"
+      "use_custom_post_type": true,
+      "title_prefix": "",
+      "sync_title": false
     },
     "article_settings": {
-      "category": "文章"
+      "category": "文章",
+      "sync_title": true
+    },
+    "enable_column_mapping": true,
+    "column_sync_mode": "all",
+    "columns": {},
+    "auto_discover_columns": true,
+    "special_categories": {
+      "digested": "精华",
+      "sticky": "置顶"
+    },
+    "post_types": {
+      "article": "post",
+      "topic": "moment"
     }
   }
 }

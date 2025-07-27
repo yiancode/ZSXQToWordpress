@@ -43,8 +43,18 @@ class ZsxqClient(ContentClient):
         self.session.headers.update({
             'Cookie': f'zsxq_access_token={access_token}',
             'User-Agent': user_agent,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json; charset=utf-8'
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Content-Type': 'application/json; charset=utf-8',
+            'Origin': 'https://wx.zsxq.com',
+            'Referer': 'https://wx.zsxq.com/',
+            'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"macOS"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site'
         })
         
     def _make_request(self, method: str, url: str, **kwargs) -> Dict[str, Any]:
@@ -275,3 +285,182 @@ class ZsxqClient(ContentClient):
             time.sleep(self.delay_seconds)
             
         return response.get('resp_data', {}).get('topic', {})
+    
+    def get_columns(self) -> List[Dict[str, Any]]:
+        """获取群组中的所有专栏列表
+        
+        Returns:
+            专栏列表
+        """
+        url = f"{self.BASE_URL}/groups/{self.group_id}/columns"
+        response = self._make_request('GET', url)
+        
+        columns = response.get('resp_data', {}).get('columns', [])
+        
+        # 解码专栏名称中的Unicode字符
+        for column in columns:
+            if 'name' in column:
+                try:
+                    # 将 \uXXXX 格式的Unicode字符解码
+                    column['name'] = column['name'].encode().decode('unicode_escape')
+                except (UnicodeDecodeError, UnicodeEncodeError):
+                    # 如果解码失败，保持原始值
+                    pass
+        
+        # 添加请求延迟
+        if self.delay_seconds > 0:
+            time.sleep(self.delay_seconds)
+            
+        return columns
+    
+    def get_topics_by_column(self, column_id: str, count: int = 20, end_time: Optional[str] = None) -> List[Dict[str, Any]]:
+        """按专栏获取主题列表
+        
+        Args:
+            column_id: 专栏ID
+            count: 获取数量
+            end_time: 结束时间（用于分页）
+            
+        Returns:
+            主题列表
+        """
+        url = f"{self.BASE_URL}/groups/{self.group_id}/topics"
+        params = {
+            'count': min(count, 50),  # API限制最多50条
+            'scope': f'by_column_id_{column_id}'
+        }
+        
+        if end_time:
+            params['end_time'] = end_time
+            
+        response = self._make_request('GET', url, params=params)
+        topics = response.get('resp_data', {}).get('topics', [])
+        
+        # 添加请求延迟，避免频率限制
+        if self.delay_seconds > 0:
+            time.sleep(self.delay_seconds)
+            
+        return topics
+    
+    def get_all_topics_by_column(self, column_id: str, batch_size: int = 20,
+                                start_time: Optional[datetime] = None,
+                                max_topics: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取指定专栏下的所有主题（支持分页）
+        
+        Args:
+            column_id: 专栏ID
+            batch_size: 每批获取数量
+            start_time: 开始时间（用于增量同步）
+            max_topics: 最大获取数量（用于测试）
+            
+        Returns:
+            所有主题列表
+        """
+        all_topics = []
+        end_time = None
+        total_fetched = 0
+        
+        while True:
+            # 检查是否达到最大数量限制
+            if max_topics and len(all_topics) >= max_topics:
+                self.logger.info(f"已达到最大获取数量 {max_topics}，停止获取")
+                break
+                
+            # 计算本次批次大小
+            current_batch_size = batch_size
+            if max_topics:
+                remaining = max_topics - len(all_topics)
+                current_batch_size = min(batch_size, remaining)
+                
+            self.logger.info(f"获取专栏 {column_id} 第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
+            try:
+                topics = self.get_topics_by_column(column_id, count=current_batch_size, end_time=end_time)
+            except ZsxqAPIError as e:
+                if 'code' in str(e) and '1059' in str(e):
+                    self.logger.warning(f"API分页错误，停止获取。已获取 {len(all_topics)} 条内容")
+                    break
+                else:
+                    raise
+            
+            if not topics:
+                break
+                
+            # 过滤开始时间之前的内容
+            if start_time:
+                filtered_topics = []
+                for topic in topics:
+                    create_time_str = topic.get('create_time', '')
+                    if create_time_str:
+                        create_time = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
+                        # 确保start_time也是aware datetime
+                        if start_time.tzinfo is None:
+                            # 如果start_time是naive，假设它是UTC时间
+                            from datetime import timezone
+                            start_time = start_time.replace(tzinfo=timezone.utc)
+                        if create_time <= start_time:
+                            # 遇到更早的内容，停止获取
+                            self.logger.info(f"遇到早于 {start_time} 的内容，停止获取")
+                            all_topics.extend(filtered_topics)
+                            return all_topics
+                    filtered_topics.append(topic)
+                topics = filtered_topics
+                
+            all_topics.extend(topics)
+            total_fetched += len(topics)
+            
+            # 获取最后一条的时间作为下一页的结束时间
+            if len(topics) < batch_size:
+                # 没有更多内容了
+                break
+                
+            last_topic = topics[-1]
+            end_time = last_topic.get('create_time')
+            if not end_time:
+                break
+                
+            self.logger.info(f"专栏 {column_id} 已获取 {total_fetched} 条内容，继续获取...")
+            
+        self.logger.info(f"专栏 {column_id} 总共获取了 {len(all_topics)} 条内容")
+        return all_topics
+    
+    def get_menus(self) -> List[Dict[str, Any]]:
+        """获取星球主页菜单（Tab标签）
+        
+        Returns:
+            菜单列表
+        """
+        url = f"{self.BASE_URL}/groups/{self.group_id}/menus"
+        response = self._make_request('GET', url)
+        
+        menus = response.get('resp_data', {}).get('menus', [])
+        
+        # 添加请求延迟
+        if self.delay_seconds > 0:
+            time.sleep(self.delay_seconds)
+            
+        return menus
+    
+    def get_columns_mapping(self) -> Dict[str, str]:
+        """获取专栏名称到ID的映射字典
+        
+        Returns:
+            专栏名称到ID的映射 {专栏名称: 专栏ID}
+        """
+        try:
+            columns = self.get_columns()
+            mapping = {}
+            
+            for column in columns:
+                column_id = str(column.get('column_id', ''))
+                column_name = column.get('name', '')
+                
+                if column_id and column_name:
+                    mapping[column_name] = column_id
+                    self.logger.debug(f"发现专栏: {column_name} -> {column_id}")
+            
+            self.logger.info(f"成功获取 {len(mapping)} 个专栏映射")
+            return mapping
+            
+        except Exception as e:
+            self.logger.error(f"获取专栏映射失败: {e}")
+            return {}

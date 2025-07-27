@@ -44,7 +44,18 @@ class ContentProcessor:
             return self._process_topic(topic)
     
     def _determine_content_type(self, topic: Dict[str, Any]) -> str:
-        """确定内容类型（文章 or 短内容）
+        """确定内容类型（文章 or 片刻）
+        
+        根据知识星球内容的数据结构判断内容类型：
+        
+        【片刻(Moment)判断标准】:
+        - topic包含talk字段，但talk字段内部没有article对象
+        - 这种内容通常是简短的文字分享配图片
+        
+        【文章(Article)判断标准】:
+        - topic.talk.article存在（正式文章）
+        - 问答类型内容（q&a-question, q&a-answer）
+        - 其他有结构化内容的类型
         
         Args:
             topic: 主题数据
@@ -54,24 +65,26 @@ class ContentProcessor:
         """
         topic_type = topic.get('type', 'talk')
         
-        # 检查配置中的映射设置
-        config_mapping = self.config.get('content_mapping', {})
-        
-        if config_mapping.get('enable_type_mapping', True):
-            # 使用配置中的映射规则
-            article_types = config_mapping.get('article_types', ['article'])
-            short_content_types = config_mapping.get('short_content_types', ['talk', 'q&a-question', 'q&a-answer'])
-            
-            if topic_type in article_types:
+        # 新的判断逻辑：基于数据结构而非类型
+        if topic_type == 'talk' and 'talk' in topic:
+            talk_data = topic['talk']
+            # 如果talk中有article字段，说明是正式文章
+            if 'article' in talk_data and talk_data['article']:
                 return 'article'
-            elif topic_type in short_content_types:
+            else:
+                # talk中没有article，说明是片刻
                 return 'short_content'
         
-        # 默认规则：article类型为文章，其他为短内容
+        # 问答类型始终视为文章
+        if topic_type in ['q&a-question', 'q&a-answer']:
+            return 'article'
+        
+        # 其他类型按原逻辑处理
         if topic_type == 'article':
             return 'article'
-        else:
-            return 'short_content'
+        
+        # 默认为片刻
+        return 'short_content'
     
     def _process_article(self, topic: Dict[str, Any]) -> Dict[str, Any]:
         """处理文章内容（保留原有逻辑）
@@ -96,8 +109,14 @@ class ContentProcessor:
         elif 'content' in topic:
             text_content = topic['content'].get('text', '')
         
-        # 处理标题 - 根据配置决定是否同步标题
-        sync_title = self.config.get('sync', {}).get('sync_title', True)
+        # 处理标题 - 根据文章配置决定是否同步标题
+        article_settings = self.config.get('content_mapping', {}).get('article_settings', {})
+        sync_title = article_settings.get('sync_title')
+        
+        # 向后兼容：如果新配置不存在，使用旧的全局配置
+        if sync_title is None:
+            sync_title = self.config.get('sync', {}).get('sync_title', True)
+            
         if sync_title:
             title = self._generate_title(topic)
         else:
@@ -115,6 +134,10 @@ class ContentProcessor:
         # 处理分类
         categories = self._determine_categories(topic)
         
+        # 获取文章设置
+        post_types = self.config.get('content_mapping', {}).get('post_types', {})
+        article_post_type = post_types.get('article', 'post')
+        
         # 构建文章数据
         article = {
             'topic_id': topic_id,
@@ -126,8 +149,9 @@ class ContentProcessor:
             'create_time': topic.get('create_time', ''),
             'is_elite': topic.get('digested', False),  # 是否精华
             'content_type': 'article',  # 标记为文章
-            'post_type': 'post',  # WordPress文章类型
-            'raw_data': topic  # 保留原始数据
+            'post_type': article_post_type,  # WordPress文章类型
+            'raw_data': topic,  # 保留原始数据
+            '_sync_title_disabled': not sync_title  # 传递标题同步禁用标记
         }
         
         
@@ -156,8 +180,14 @@ class ContentProcessor:
         elif 'content' in topic:
             text_content = topic['content'].get('text', '')
         
-        # 生成主题标题 - 根据配置决定是否同步标题
-        sync_title = self.config.get('sync', {}).get('sync_title', True)
+        # 生成主题标题 - 根据主题配置决定是否同步标题
+        topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
+        sync_title = topic_settings.get('sync_title')
+        
+        # 向后兼容：如果新配置不存在，使用旧的全局配置
+        if sync_title is None:
+            sync_title = self.config.get('sync', {}).get('sync_title', True)
+            
         if sync_title:
             title = self._generate_topic_title(topic, text_content)
         else:
@@ -172,9 +202,20 @@ class ContentProcessor:
         # 处理标签
         tags = self._extract_tags(topic)
         
-        # 获取配置中的主题设置
+        # 处理分类
+        categories = self._determine_categories(topic)
+        
+        # 获取主题设置
         topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
-        short_content_category = topic_settings.get('category', '短内容')
+        default_category = topic_settings.get('category', '主题')
+        
+        # 如果没有分类，使用默认分类
+        if not categories:
+            categories = [default_category]
+        
+        # 获取post类型设置
+        post_types = self.config.get('content_mapping', {}).get('post_types', {})
+        topic_post_type = post_types.get('topic', 'post')
         
         # 构建短内容数据
         short_content = {
@@ -183,12 +224,13 @@ class ContentProcessor:
             'content': processed_content,
             'images': images,
             'tags': tags,
-            'categories': [short_content_category],
+            'categories': categories,
             'create_time': topic.get('create_time', ''),
             'is_elite': topic.get('digested', False),  # 是否精华
             'content_type': 'short_content',  # 标记为短内容
-            'post_type': 'post',  # 使用标准WordPress文章类型
-            'raw_data': topic  # 保留原始数据
+            'post_type': topic_post_type,  # WordPress文章类型
+            'raw_data': topic,  # 保留原始数据
+            '_sync_title_disabled': not sync_title  # 传递标题同步禁用标记
         }
         
         
@@ -204,7 +246,7 @@ class ContentProcessor:
         Returns:
             主题标题
         """
-        # 获取配置中的最大标题长度
+        # 获取配置中的主题设置
         topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
         max_length = topic_settings.get('max_title_length', 30)
         title_prefix = topic_settings.get('title_prefix', '[主题]')
@@ -632,7 +674,7 @@ class ContentProcessor:
         return unique_tags
         
     def _determine_categories(self, topic: Dict[str, Any]) -> List[str]:
-        """确定文章分类
+        """确定文章分类（基于专栏映射）
         
         Args:
             topic: 主题数据
@@ -642,25 +684,40 @@ class ContentProcessor:
         """
         categories = []
         
-        # 根据内容类型确定分类
-        content = topic.get('content', {})
+        # 获取配置
+        config_mapping = self.config.get('content_mapping', {})
         
-        # 如果有图片，可能是图文分享
-        if content.get('images'):
-            categories.append('图文分享')
-            
-        # 根据话题标签推断分类
-        content_text = content.get('text', '')
-        if re.search(r'技术|编程|代码|开发', content_text, re.IGNORECASE):
-            categories.append('技术分享')
-        elif re.search(r'生活|日常|感悟', content_text, re.IGNORECASE):
-            categories.append('生活感悟')
-        elif re.search(r'读书|书籍|阅读', content_text, re.IGNORECASE):
-            categories.append('读书笔记')
-            
-        # 如果没有分类，使用默认分类
+        # 如果启用了专栏映射且topic有专栏信息
+        if (config_mapping.get('enable_column_mapping', False) and
+            hasattr(topic, '_column_name') and topic._column_name):
+            categories.append(topic._column_name)
+        elif '_column_name' in topic and topic['_column_name']:
+            # 如果topic是字典且包含专栏名称
+            categories.append(topic['_column_name'])
+        
+        # 添加特殊分类：精华、置顶
+        special_categories = config_mapping.get('special_categories', {})
+        if topic.get('digested', False):  # 精华
+            digested_category = special_categories.get('digested', '精华')
+            categories.append(digested_category)
+        if topic.get('sticky', False):  # 置顶
+            sticky_category = special_categories.get('sticky', '置顶')
+            categories.append(sticky_category)
+        
+        # 确定内容类型，获取对应的默认分类
+        content_type = self._determine_content_type(topic)
+        if content_type == 'article':
+            # 文章类型使用 article_settings 中的分类
+            article_settings = config_mapping.get('article_settings', {})
+            default_category = article_settings.get('category', '文章')
+        else:
+            # 主题类型使用 topic_settings 中的分类
+            topic_settings = config_mapping.get('topic_settings', {})
+            default_category = topic_settings.get('category', '主题')
+        
+        # 如果没有分类，使用内容类型对应的默认分类
         if not categories:
-            categories.append('知识星球')
+            categories.append(default_category)
             
         return categories
         

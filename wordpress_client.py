@@ -139,53 +139,64 @@ class WordPressClient(PublishClient):
             else:
                 title = "无标题文章"
         
+        # 获取post类型
+        post_type = article_data.get('post_type', 'post')
+        
         return self.create_post(
             title=title,
             content=article_data['content'],
             categories=article_data.get('categories'),
             tags=article_data.get('tags'),
+            post_type=post_type,
             status='publish'
         )
     
     def _create_topic(self, content_data: Dict[str, Any]) -> str:
-        """创建WordPress主题（作为普通文章）
+        """创建WordPress片刻内容
         
         Args:
-            content_data: 主题数据
+            content_data: 片刻数据
             
         Returns:
             文章ID
         """
-        # 处理空标题情况
+        # 获取标题 - 如果配置了不同步标题，则保持空标题
         title = content_data['title']
+        sync_title_disabled = content_data.get('_sync_title_disabled', False)
+        
         if not title or title.strip() == "":
-            # 生成默认标题
-            from datetime import datetime
-            create_time = content_data.get('create_time', '')
-            if create_time:
-                try:
-                    dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
-                    title = dt.strftime('主题 %m-%d %H:%M')
-                except:
-                    title = "无标题主题"
+            if not sync_title_disabled:
+                # 只有在没有明确禁用标题同步时才生成默认标题
+                from datetime import datetime
+                create_time = content_data.get('create_time', '')
+                if create_time:
+                    try:
+                        dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+                        title = dt.strftime('片刻 %m-%d %H:%M')
+                    except:
+                        title = "无标题片刻"
+                else:
+                    title = "无标题片刻"
             else:
-                title = "无标题主题"
+                # 标题同步被禁用，使用空字符串或最小标题
+                title = " "  # WordPress需要非空标题，使用单个空格
         
-        # 在标题前加上[主题]标识
-        title = f"[主题] {title}"
+        # 在内容中添加片刻标识
+        content = f'<div class="moment-content">{content_data["content"]}</div>'
         
-        # 在内容中添加主题标识
-        content = f'<div class="short-content">{content_data["content"]}</div>'
-        
-        # 添加主题相关的标签和分类
+        # 获取标签和分类
         tags = content_data.get('tags', [])
-        categories = content_data.get('categories', ['主题'])
+        categories = content_data.get('categories', ['片刻'])
+        
+        # 获取post类型
+        post_type = content_data.get('post_type', 'post')
         
         return self.create_post(
             title=title,
             content=content,
             categories=categories,
             tags=tags,
+            post_type=post_type,
             status='publish'
         )
     
@@ -194,6 +205,7 @@ class WordPressClient(PublishClient):
     def create_post(self, title: str, content: str,
                    categories: Optional[List[str]] = None,
                    tags: Optional[List[str]] = None,
+                   post_type: str = 'post',
                    status: str = 'publish') -> str:
         """创建文章
         
@@ -202,6 +214,7 @@ class WordPressClient(PublishClient):
             content: 文章内容
             categories: 分类列表
             tags: 标签列表
+            post_type: 文章类型 (post/moment等)
             status: 发布状态 (publish/draft)
             
         Returns:
@@ -214,33 +227,31 @@ class WordPressClient(PublishClient):
         post.title = title
         post.content = content
         post.post_status = status
+        post.post_type = post_type
         post.comment_status = 'open'
         
-        # 处理分类 - 暂时简化，只使用默认分类
+        # 处理分类 - 使用更简单的方式避免序列化问题
         if categories:
-            # 暂时注释掉，避免API问题
-            pass
-            # category_terms = []
-            # for cat_name in categories:
-            #     cat_id = self._get_or_create_category(cat_name)
-            #     if cat_id:
-            #         term = WordPressTerm()
-            #         term.taxonomy = 'category'
-            #         term.term_id = str(cat_id)
-            #         category_terms.append(term)
-            # if category_terms:
-            #     post.terms = category_terms
+            try:
+                # 确保分类存在
+                for cat_name in categories:
+                    self._get_or_create_category(cat_name)
+                
+                # 使用简单的字符串列表而不是WordPressTerm对象
+                if not hasattr(post, 'terms_names'):
+                    post.terms_names = {}
+                post.terms_names['category'] = categories
+                self.logger.info(f"设置分类: {categories}")
+            except Exception as e:
+                self.logger.error(f"设置分类时出错: {e}")
+                # 继续发布文章，即使分类设置失败
         
         # 处理标签 - 使用更简单的方式避免序列化问题
         if tags:
-            self.logger.debug(f"=== WordPress标签处理调试 ===")
-            self.logger.debug(f"待处理标签: {tags}")
-            
             # 确保标签存在，但不在创建文章时设置
             for tag_name in tags:
                 try:
                     self._get_or_create_tag(tag_name)
-                    self.logger.debug(f"标签确认存在: {tag_name}")
                 except Exception as e:
                     self.logger.error(f"处理标签 '{tag_name}' 时出错: {e}")
             
@@ -248,7 +259,6 @@ class WordPressClient(PublishClient):
             post.terms_names = {
                 'post_tag': tags
             }
-            self.logger.debug(f"使用terms_names设置标签: {tags}")
         
         try:
             post_id = self.client.call(posts.NewPost(post))

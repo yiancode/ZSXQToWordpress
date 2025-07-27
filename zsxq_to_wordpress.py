@@ -57,6 +57,13 @@ def setup_logging(verbose: bool = False):
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
     
+    # 调整第三方库日志级别，避免兼容性问题
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+    logging.getLogger('urllib3.util.retry').setLevel(logging.WARNING)
+    logging.getLogger('requests').setLevel(logging.WARNING)
+    logging.getLogger('qiniu').setLevel(logging.INFO)
+    
 
 class ZsxqToWordPressSync:
     """知识星球到WordPress同步器"""
@@ -188,47 +195,47 @@ class ZsxqToWordPressSync:
                 
             # 处理图片 - 使用批量处理优化
             processed_images = {}
-            self.logger.debug(f"=== 图片处理调试 ===")
-            self.logger.debug(f"文章图片列表: {article['images']}")
-            self.logger.debug(f"文章图片数量: {len(article['images']) if article['images'] else 0}")
-            self.logger.debug(f"七牛云上传器状态: {'已配置' if self.qiniu_uploader else '未配置'}")
             
             if article['images'] and self.qiniu_uploader:
                 self.logger.info(f"批量处理 {len(article['images'])} 张图片...")
                 # 使用批量处理方法
                 processed_images = self.qiniu_uploader.process_images_batch(
-                    article['images'], 
+                    article['images'],
                     max_workers=min(3, len(article['images']))  # 动态调整并发数
                 )
-                self.logger.debug(f"批量处理结果: {processed_images}")
-            elif not article['images']:
-                self.logger.debug("没有图片需要处理")
-            elif not self.qiniu_uploader:
-                self.logger.debug("七牛云未配置，跳过图片处理")
                     
             # 格式化最终内容
-            self.logger.debug(f"开始格式化文章内容，处理后的图片映射: {processed_images}")
             final_content = self.content_processor.format_article_with_images(
                 article, processed_images
             )
             
             # 发布到WordPress - 根据内容类型选择创建方法
-            if article.get('content_type') == 'moment':
-                # 创建片刻类型
-                wp_id = self.wp_client._create_moment({
+            content_type = article.get('content_type', 'article')
+            
+            if content_type == 'short_content':
+                # 创建主题类型内容 - 转换为WordPress客户端期望的格式
+                article_for_wp = {
                     'title': article['title'],
                     'content': final_content,
                     'categories': article['categories'],
-                    'tags': article['tags']
-                })
+                    'tags': article['tags'],
+                    'content_type': 'topic',  # WordPress客户端期望的类型
+                    'post_type': article.get('post_type', 'post'),  # 传递post_type配置
+                    'create_time': article.get('create_time', '')
+                }
+                wp_id = self.wp_client._create_topic(article_for_wp)
             else:
                 # 创建文章类型
-                wp_id = self.wp_client.create_post(
-                    title=article['title'],
-                    content=final_content,
-                    categories=article['categories'],
-                    tags=article['tags']
-                )
+                article_for_wp = {
+                    'title': article['title'],
+                    'content': final_content,
+                    'categories': article['categories'],
+                    'tags': article['tags'],
+                    'content_type': 'article',
+                    'post_type': article.get('post_type', 'post'),  # 传递post_type配置
+                    'create_time': article.get('create_time', '')
+                }
+                wp_id = self.wp_client._create_article(article_for_wp)
             
             # 标记为已同步
             self.sync_state.mark_synced(
@@ -249,19 +256,65 @@ class ZsxqToWordPressSync:
         """执行全量同步"""
         self.logger.info("开始执行全量同步...")
         
+        # 获取配置中的专栏映射
+        column_mapping = self.config.data.get('content_mapping', {}).get('columns', {})
+        enable_column_mapping = self.config.data.get('content_mapping', {}).get('enable_column_mapping', False)
+        
         # 获取所有主题
+        all_topics = []
         try:
             # 检查是否为测试模式（通过环境变量）
             max_topics = None
             if os.environ.get('ZSXQ_TEST_MODE'):
                 max_topics = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
                 self.logger.info(f"测试模式：最多同步 {max_topics} 条内容")
-                
-            topics = self.zsxq_client.get_all_topics(
-                batch_size=self.config.sync['batch_size'],
-                max_topics=max_topics
-            )
-            self.logger.info(f"获取到 {len(topics)} 个主题")
+            
+            # 只有在启用专栏映射且有配置的情况下才尝试获取专栏
+            if enable_column_mapping and column_mapping:
+                try:
+                    columns = self.zsxq_client.get_columns()
+                    self.logger.info(f"获取到 {len(columns)} 个专栏")
+                    
+                    # 遍历每个配置的专栏
+                    for column in columns:
+                        column_id = str(column['column_id'])
+                        column_name = column['name']
+                        
+                        # 检查是否在配置的映射中
+                        if column_id in column_mapping:
+                            self.logger.info(f"同步专栏: {column_name} (ID: {column_id})")
+                            
+                            column_topics = self.zsxq_client.get_all_topics_by_column(
+                                column_id=column_id,
+                                batch_size=self.config.sync['batch_size'],
+                                max_topics=max_topics
+                            )
+                            
+                            # 为每个topic添加专栏信息
+                            for topic in column_topics:
+                                topic['_column_id'] = column_id
+                                topic['_column_name'] = column_name
+                            
+                            all_topics.extend(column_topics)
+                            self.logger.info(f"专栏 {column_name} 获取到 {len(column_topics)} 个主题")
+                        else:
+                            self.logger.debug(f"跳过未配置的专栏: {column_name} (ID: {column_id})")
+                            
+                except ZsxqAPIError as e:
+                    self.logger.warning(f"获取专栏列表失败: {e}，改用传统方式获取内容")
+                    enable_column_mapping = False  # 强制使用传统方式
+            
+            # 如果没有启用专栏映射或专栏获取失败，使用传统方式获取所有内容
+            if not enable_column_mapping or not column_mapping or not all_topics:
+                self.logger.warning("未配置专栏映射或专栏获取失败，使用传统方式获取所有内容")
+                all_topics = self.zsxq_client.get_all_topics(
+                    batch_size=self.config.sync['batch_size'],
+                    max_topics=max_topics
+                )
+            
+            self.logger.info(f"总共获取到 {len(all_topics)} 个主题")
+            topics = all_topics
+            
         except ZsxqAPIError as e:
             self.logger.error(f"获取主题失败: {e}")
             return
