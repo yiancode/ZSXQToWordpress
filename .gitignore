@@ -20,3 +20,12 @@ __pycache__/
 # IDE配置
 .vscode/
 .idea/
+
+# macOS系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

@@ -34,23 +34,23 @@ class ContentProcessor:
         topic_id = str(topic.get('topic_id', ''))
         topic_type = topic.get('type', '')
         
-        # 确定内容类型（文章 or 片刻）
+        # 确定内容类型（文章 or 主题）
         content_type = self._determine_content_type(topic)
         
         # 根据内容类型选择处理方式
         if content_type == 'article':
             return self._process_article(topic)
         else:
-            return self._process_moment(topic)
+            return self._process_topic(topic)
     
     def _determine_content_type(self, topic: Dict[str, Any]) -> str:
-        """确定内容类型（文章 or 片刻）
+        """确定内容类型（文章 or 短内容）
         
         Args:
             topic: 主题数据
             
         Returns:
-            内容类型：'article' 或 'moment'
+            内容类型：'article' 或 'short_content'
         """
         topic_type = topic.get('type', 'talk')
         
@@ -60,18 +60,18 @@ class ContentProcessor:
         if config_mapping.get('enable_type_mapping', True):
             # 使用配置中的映射规则
             article_types = config_mapping.get('article_types', ['article'])
-            moment_types = config_mapping.get('moment_types', ['talk', 'q&a-question', 'q&a-answer'])
+            short_content_types = config_mapping.get('short_content_types', ['talk', 'q&a-question', 'q&a-answer'])
             
             if topic_type in article_types:
                 return 'article'
-            elif topic_type in moment_types:
-                return 'moment'
+            elif topic_type in short_content_types:
+                return 'short_content'
         
-        # 默认规则：article类型为文章，其他为片刻
+        # 默认规则：article类型为文章，其他为短内容
         if topic_type == 'article':
             return 'article'
         else:
-            return 'moment'
+            return 'short_content'
     
     def _process_article(self, topic: Dict[str, Any]) -> Dict[str, Any]:
         """处理文章内容（保留原有逻辑）
@@ -96,8 +96,12 @@ class ContentProcessor:
         elif 'content' in topic:
             text_content = topic['content'].get('text', '')
         
-        # 处理标题
-        title = self._generate_title(topic)
+        # 处理标题 - 根据配置决定是否同步标题
+        sync_title = self.config.get('sync', {}).get('sync_title', True)
+        if sync_title:
+            title = self._generate_title(topic)
+        else:
+            title = ""  # 不同步标题时设置为空
         
         # 处理内容 - 传递标题以便去重
         processed_content = self._process_content(text_content, title)
@@ -129,14 +133,14 @@ class ContentProcessor:
         
         return article
     
-    def _process_moment(self, topic: Dict[str, Any]) -> Dict[str, Any]:
-        """处理片刻内容
+    def _process_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
+        """处理主题
         
         Args:
             topic: 知识星球主题数据
             
         Returns:
-            处理后的片刻数据
+            处理后的主题数据
         """
         topic_id = str(topic.get('topic_id', ''))
         topic_type = topic.get('type', '')
@@ -152,54 +156,58 @@ class ContentProcessor:
         elif 'content' in topic:
             text_content = topic['content'].get('text', '')
         
-        # 生成片刻标题
-        title = self._generate_moment_title(topic, text_content)
+        # 生成主题标题 - 根据配置决定是否同步标题
+        sync_title = self.config.get('sync', {}).get('sync_title', True)
+        if sync_title:
+            title = self._generate_topic_title(topic, text_content)
+        else:
+            title = ""  # 不同步标题时设置为空
         
-        # 处理片刻内容
-        processed_content = self._process_moment_content(text_content)
+        # 处理短内容
+        processed_content = self._process_topic_text(text_content)
         
         # 提取图片
         images = self._extract_images(topic)
         
-        # 处理标签（添加片刻标识）
+        # 处理标签
         tags = self._extract_tags(topic)
-        tags.append('知识星球片刻')
         
-        # 获取配置中的片刻设置
-        moment_settings = self.config.get('content_mapping', {}).get('moment_settings', {})
-        moment_category = moment_settings.get('category', '片刻')
+        # 获取配置中的主题设置
+        topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
+        short_content_category = topic_settings.get('category', '短内容')
         
-        # 构建片刻数据
-        moment = {
+        # 构建短内容数据
+        short_content = {
             'topic_id': topic_id,
             'title': title,
             'content': processed_content,
             'images': images,
             'tags': tags,
-            'categories': [moment_category],
+            'categories': [short_content_category],
             'create_time': topic.get('create_time', ''),
             'is_elite': topic.get('digested', False),  # 是否精华
-            'content_type': 'moment',  # 标记为片刻
-            'post_type': 'moment',  # WordPress片刻类型
+            'content_type': 'short_content',  # 标记为短内容
+            'post_type': 'post',  # 使用标准WordPress文章类型
             'raw_data': topic  # 保留原始数据
         }
         
         
-        return moment
+        return short_content
     
-    def _generate_moment_title(self, topic: Dict[str, Any], text_content: str = "") -> str:
-        """生成片刻标题
+    def _generate_topic_title(self, topic: Dict[str, Any], text_content: str = "") -> str:
+        """生成主题标题
         
         Args:
             topic: 主题数据
             text_content: 文本内容
             
         Returns:
-            片刻标题
+            主题标题
         """
         # 获取配置中的最大标题长度
-        moment_settings = self.config.get('content_mapping', {}).get('moment_settings', {})
-        max_length = moment_settings.get('max_title_length', 30)
+        topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
+        max_length = topic_settings.get('max_title_length', 30)
+        title_prefix = topic_settings.get('title_prefix', '[主题]')
         
         if not text_content:
             # 如果没有文本内容，尝试从topic中获取
@@ -228,25 +236,28 @@ class ContentProcessor:
                 # 如果截断位置不是句末，添加省略号
                 if not title.endswith(('。', '！', '？', '，', '、')):
                     title += '…'
+            
+            # 添加前缀标识
+            title = f"{title_prefix} {title}"
         else:
             # 如果没有内容，使用时间戳作为标题
             create_time = topic.get('create_time', '')
             if create_time:
                 dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
-                title = dt.strftime('片刻 %m-%d %H:%M')
+                title = f"{title_prefix} {dt.strftime('%m-%d %H:%M')}"
             else:
-                title = '无标题片刻'
+                title = f"{title_prefix} 无标题内容"
         
         return title
     
-    def _process_moment_content(self, text: str) -> str:
-        """处理片刻内容格式
+    def _process_topic_text(self, text: str) -> str:
+        """处理主题格式
         
         Args:
             text: 原始文本
             
         Returns:
-            处理后的片刻内容
+            处理后的短内容
         """
         if not text:
             return ""
@@ -278,7 +289,7 @@ class ContentProcessor:
         
         processed = re.sub(r'<e type="web"[^>]*/>', replace_link, processed)
         
-        # 片刻内容保持简洁，只转换必要的换行
+        # 短内容保持简洁，只转换必要的换行
         processed = processed.replace('\n\n', '</p><p>')
         processed = processed.replace('\n', '<br>')
         

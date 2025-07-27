@@ -19,7 +19,8 @@
   "sync": {
     "batch_size": 20,
     "delay_seconds": 2,
-    "max_retries": 5
+    "max_retries": 5,
+    "sync_title": true
   },
   "source": {
     "name": "YOUR_ZSXQ_GROUP_NAME",
@@ -28,14 +29,14 @@
   "content_mapping": {
     "enable_type_mapping": true,
     "article_types": ["article"],
-    "moment_types": ["talk", "q&a-question", "q&a-answer"],
-    "moment_settings": {
-      "category": "片刻",
+    "topic_types": ["talk", "q&a-question", "q&a-answer"],
+    "topic_settings": {
+      "category": "主题",
       "max_title_length": 30,
-      "use_custom_post_type": true
+      "title_prefix": "[主题]"
     },
     "article_settings": {
-      "category": "知识星球文章"
+      "category": "文章"
     }
   }
 }
