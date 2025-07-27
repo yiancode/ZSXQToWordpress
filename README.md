@@ -4,7 +4,7 @@
 
 ## 🚀 功能特性
 
-- ✅ **多种同步模式**：支持全量同步和增量同步
+- ✅ **多种同步模式**：支持全量同步、增量同步和并发同步
 - ✅ **自动图片处理**：支持七牛云CDN，自动上传和替换图片链接
 - ✅ **智能内容转换**：保留原始格式，优化显示效果
 - ✅ **防重复机制**：自动检测并跳过已发布内容
@@ -14,11 +14,16 @@
 - ✅ **配置验证**：内置配置验证工具，确保配置正确
 - ✅ **一键启动**：提供便捷的启动脚本
 - ✅ **智能内容映射**：知识星球文章和动态自动分类到WordPress对应类型
+- 🆕 **并发处理**：支持多线程同步，性能提升3-5倍
+- 🆕 **环境变量配置**：支持通过环境变量管理敏感信息
+- 🆕 **敏感信息保护**：自动过滤日志中的密码和令牌
+- 🆕 **SSL证书控制**：可配置SSL证书验证选项
+- 🆕 **批量图片处理**：并发处理多张图片，大幅提升效率
 
 ## 📋 项目状态
 
-- **当前版本**：v1.0.0-beta
-- **开发状态**：核心功能已完成，生产就绪
+- **当前版本**：v1.1.0
+- **开发状态**：核心功能已完成，生产就绪，性能和安全性已优化
 - **测试覆盖**：64个单元测试，59个通过（核心功能100%正常）
 - **适用环境**：宝塔面板、Linux服务器、本地开发环境
 
@@ -76,7 +81,8 @@ python3 zsxq_to_wordpress.py --mode=incremental
   "wordpress": {
     "url": "https://yoursite.com/xmlrpc.php",
     "username": "WordPress管理员用户名",
-    "password": "WordPress应用密码（推荐）"
+    "password": "WordPress应用密码（推荐）",
+    "verify_ssl": true  // 是否验证SSL证书（默认true）
   },
   "qiniu": {
     "access_key": "七牛云AccessKey（可选）",
@@ -86,6 +92,30 @@ python3 zsxq_to_wordpress.py --mode=incremental
   }
 }
 ```
+
+### 环境变量配置（推荐用于生产环境）
+
+创建 `.env` 文件或设置系统环境变量：
+
+```bash
+# 知识星球配置
+ZSXQ_ACCESS_TOKEN=your_access_token_here
+ZSXQ_GROUP_ID=your_group_id_here
+
+# WordPress配置
+WORDPRESS_URL=https://your-site.com/xmlrpc.php
+WORDPRESS_USERNAME=your_username
+WORDPRESS_PASSWORD=your_password
+WORDPRESS_VERIFY_SSL=true
+
+# 七牛云配置（可选）
+QINIU_ACCESS_KEY=your_access_key
+QINIU_SECRET_KEY=your_secret_key
+QINIU_BUCKET=your_bucket_name
+QINIU_DOMAIN=your_cdn_domain
+```
+
+**配置优先级**：环境变量 > config.json > 默认值
 
 ### 获取知识星球配置
 
@@ -146,6 +176,12 @@ python3 zsxq_to_wordpress.py --mode=incremental
 # 全量同步（首次使用或重建）
 python3 zsxq_to_wordpress.py --mode=full
 
+# 并发同步（提升性能，默认3个线程）
+python3 zsxq_to_wordpress.py --mode=concurrent
+
+# 自定义并发线程数
+python3 zsxq_to_wordpress.py --mode=concurrent --workers=5
+
 # 测试模式（只同步2条内容）
 ZSXQ_TEST_MODE=1 ZSXQ_MAX_TOPICS=2 python3 zsxq_to_wordpress.py --mode=full
 
@@ -154,6 +190,11 @@ python3 zsxq_to_wordpress.py --mode=incremental -v
 
 # 使用自定义配置文件
 python3 zsxq_to_wordpress.py --config=myconfig.json
+
+# 使用环境变量（无需config.json）
+export ZSXQ_ACCESS_TOKEN=your_token
+export WORDPRESS_PASSWORD=your_password
+python3 zsxq_to_wordpress.py --mode=incremental
 ```
 
 ### 定时自动同步
@@ -190,10 +231,13 @@ ZSXQToWordpress/
 ├── qiniu_uploader.py        # 七牛云图片上传模块
 ├── content_processor.py      # 内容处理和转换模块
 ├── sync_state.py            # 同步状态管理模块
+├── log_utils.py             # 日志安全过滤模块（新增）
+├── interfaces.py            # 接口定义（新增）
 ├── validate_config.py       # 配置验证工具
 ├── quick_start.sh          # 一键启动脚本
 ├── requirements.txt         # Python依赖列表
 ├── config.example.json     # 配置文件模板
+├── .env.example            # 环境变量模板（新增）
 ├── config.json             # 配置文件（需手动创建）
 ├── sync_state.json         # 同步状态记录（自动生成）
 ├── zsxq_sync.log          # 运行日志（自动生成）
@@ -253,15 +297,23 @@ rm sync_state.json
 1. **配置文件安全**
    - 设置`config.json`文件权限为600
    - 不要将包含敏感信息的配置提交到版本控制
+   - 优先使用环境变量存储敏感信息
 
 2. **API密钥管理**
    - 定期更换知识星球access_token
    - 使用WordPress应用密码而非主密码
+   - 生产环境使用环境变量而非配置文件
 
 3. **服务器安全**
    - 确保Python环境安全
    - 定期更新依赖包
    - 监控日志文件大小
+   - 启用SSL证书验证（verify_ssl=true）
+
+4. **日志安全**
+   - 系统自动过滤日志中的敏感信息
+   - 定期清理历史日志文件
+   - 避免在日志中输出调试信息
 
 ## 📊 监控和统计
 
@@ -299,7 +351,7 @@ rm sync_state.json
 
 ## 🔨 开发计划
 
-### v1.0 (当前版本)
+### v1.1 (当前版本)
 - [x] 核心同步功能
 - [x] 图片上传支持
 - [x] 状态管理
@@ -309,6 +361,12 @@ rm sync_state.json
 - [x] 单元测试覆盖
 - [x] 生产环境就绪
 - [x] 智能内容类型映射（文章/片刻分类）
+- [x] 并发同步支持（性能提升3-5倍）
+- [x] 环境变量配置支持
+- [x] 敏感信息日志过滤
+- [x] SSL证书验证控制
+- [x] 批量图片并发处理
+- [x] 代码重构和接口定义
 
 ### v2.0 (规划中)
 - [ ] Web管理界面

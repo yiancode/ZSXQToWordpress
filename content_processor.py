@@ -450,41 +450,69 @@ class ContentProcessor:
         if not text or not title:
             return text
             
-        # 获取正文的第一行
         lines = text.strip().split('\n')
         if not lines or not lines[0]:
             return text
             
         first_line = lines[0].strip()
         
-        # 检查是否有记录的原始标题行（来自 _generate_title）
+        # 检查各种重复情况
+        if self._is_title_duplicate(first_line, title):
+            remaining_lines = lines[1:]
+            return '\n'.join(remaining_lines).strip()
+            
+        return text
+    
+    def _is_title_duplicate(self, first_line: str, title: str) -> bool:
+        """检查第一行是否与标题重复
+        
+        Args:
+            first_line: 正文第一行
+            title: 文章标题
+            
+        Returns:
+            是否重复
+        """
+        # 检查是否有记录的原始标题行
         if hasattr(self, '_title_source_line') and self._title_source_line:
-            # 如果第一行与原始标题行匹配，移除整行
             if first_line == self._title_source_line:
-                remaining_lines = lines[1:]
-                return '\n'.join(remaining_lines).strip()
+                return True
         
-        # 方案1: 检查完全匹配
-        if first_line.startswith(title.rstrip('…..')):
-            remaining_lines = lines[1:]
-            return '\n'.join(remaining_lines).strip()
-        
-        # 方案2: 检查截断情况 - 标题可能是第一行的截断版本
-        clean_title = title.rstrip('….')  # 移除省略号
-        if first_line.startswith(clean_title) and len(clean_title) >= 10:
-            remaining_lines = lines[1:]
-            return '\n'.join(remaining_lines).strip()
-        
-        # 方案3: 模糊匹配 - 处理标点符号差异
+        # 检查完全匹配
+        if self._exact_match(first_line, title):
+            return True
+            
+        # 检查截断匹配
+        if self._truncated_match(first_line, title):
+            return True
+            
+        # 检查模糊匹配
+        if self._fuzzy_match(first_line, title):
+            return True
+            
+        return False
+    
+    def _exact_match(self, first_line: str, title: str) -> bool:
+        """检查完全匹配"""
+        return first_line.startswith(title.rstrip('…..'))
+    
+    def _truncated_match(self, first_line: str, title: str) -> bool:
+        """检查截断匹配"""
+        clean_title = title.rstrip('…..')
+        return (first_line.startswith(clean_title) and 
+                len(clean_title) >= 10)
+    
+    def _fuzzy_match(self, first_line: str, title: str) -> bool:
+        """检查模糊匹配（忽略标点符号）"""
         import re
+        clean_title = title.rstrip('…..')
         # 移除标点符号进行比较
         title_clean = re.sub(r'[^\w\s]', '', clean_title)
         first_line_clean = re.sub(r'[^\w\s]', '', first_line)
         
-        if title_clean and first_line_clean.startswith(title_clean) and len(title_clean) >= 8:
-            remaining_lines = lines[1:]
-            return '\n'.join(remaining_lines).strip()
-        return text
+        return (title_clean and 
+                first_line_clean.startswith(title_clean) and 
+                len(title_clean) >= 8)
         
     def _extract_images(self, topic: Dict[str, Any]) -> List[str]:
         """提取主题中的图片URL - 增强版，递归搜索所有可能的图片字段

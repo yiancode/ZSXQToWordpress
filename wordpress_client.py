@@ -7,6 +7,7 @@ import logging
 import ssl
 import urllib3
 from typing import List, Dict, Any, Optional
+import warnings
 
 # Python 3.9+ 兼容性修复
 import collections.abc
@@ -17,12 +18,7 @@ if not hasattr(collections, 'Iterable'):
 from wordpress_xmlrpc import Client, WordPressPost, WordPressTerm
 from wordpress_xmlrpc.methods import posts, taxonomies
 from wordpress_xmlrpc.exceptions import InvalidCredentialsError, ServerConnectionError
-
-# 禁用SSL警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# 创建一个不验证SSL的上下文
-ssl._create_default_https_context = ssl._create_unverified_context
+from interfaces import PublishClient
 
 
 class WordPressError(Exception):
@@ -30,29 +26,46 @@ class WordPressError(Exception):
     pass
 
 
-class WordPressClient:
+class WordPressClient(PublishClient):
     """WordPress XML-RPC客户端"""
     
-    def __init__(self, url: str, username: str, password: str):
+    def __init__(self, url: str, username: str, password: str, verify_ssl: bool = True):
         """初始化客户端
         
         Args:
             url: WordPress XML-RPC端点URL
             username: 用户名
             password: 密码
+            verify_ssl: 是否验证SSL证书（默认True）
         """
         self.url = url
         self.username = username
         self.password = password
+        self.verify_ssl = verify_ssl
         self.logger = logging.getLogger(__name__)
         self.client = None
         self._category_cache = {}  # 分类缓存
         self._tag_cache = {}  # 标签缓存
         
+        # SSL配置警告
+        if not verify_ssl:
+            self.logger.warning("SSL证书验证已禁用，存在安全风险！请仅在开发环境使用。")
+            # 仅在需要时禁用SSL警告
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
     def connect(self) -> None:
         """连接到WordPress"""
         try:
-            self.client = Client(self.url, self.username, self.password)
+            # 根据SSL配置创建客户端
+            if not self.verify_ssl:
+                # 创建不验证SSL的上下文
+                import xmlrpc.client
+                context = ssl._create_unverified_context()
+                transport = xmlrpc.client.SafeTransport(context=context)
+                self.client = Client(self.url, self.username, self.password, transport=transport)
+            else:
+                self.client = Client(self.url, self.username, self.password)
+            
             # 测试连接
             self.client.call(posts.GetPosts({'number': 1}))
             self.logger.info("成功连接到WordPress")
@@ -80,6 +93,11 @@ class WordPressClient:
         except Exception as e:
             self.logger.error(f"验证连接失败: {e}")
             return False
+    
+    def close(self) -> None:
+        """关闭连接并清理资源"""
+        # WordPress XML-RPC客户端不需要显式关闭
+        self.logger.info("WordPress客户端连接已关闭")
     
     def create_content_by_type(self, content_data: Dict[str, Any]) -> str:
         """根据内容类型创建WordPress内容

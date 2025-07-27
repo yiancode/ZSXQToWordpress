@@ -2,10 +2,12 @@
 """
 配置管理模块
 负责加载、验证和管理配置文件
+支持环境变量覆盖敏感配置
 """
 import json
 import os
 from typing import Dict, Any, Optional
+import logging
 
 
 class ConfigError(Exception):
@@ -24,6 +26,7 @@ class Config:
         """
         self.config_path = config_path
         self._config: Dict[str, Any] = {}
+        self.logger = logging.getLogger(__name__)
         
     def load(self) -> None:
         """加载配置文件"""
@@ -37,8 +40,57 @@ class Config:
             raise ConfigError(f"配置文件格式错误: {e}")
         except Exception as e:
             raise ConfigError(f"读取配置文件失败: {e}")
+        
+        # 应用环境变量覆盖
+        self._apply_env_overrides()
             
         self._validate()
+    
+    def _apply_env_overrides(self) -> None:
+        """应用环境变量覆盖配置"""
+        # 知识星球配置
+        if 'ZSXQ_ACCESS_TOKEN' in os.environ:
+            self._config.setdefault('zsxq', {})['access_token'] = os.environ['ZSXQ_ACCESS_TOKEN']
+            self.logger.info("使用环境变量 ZSXQ_ACCESS_TOKEN")
+        
+        if 'ZSXQ_GROUP_ID' in os.environ:
+            self._config.setdefault('zsxq', {})['group_id'] = os.environ['ZSXQ_GROUP_ID']
+            self.logger.info("使用环境变量 ZSXQ_GROUP_ID")
+        
+        # WordPress配置
+        if 'WORDPRESS_URL' in os.environ:
+            self._config.setdefault('wordpress', {})['url'] = os.environ['WORDPRESS_URL']
+            self.logger.info("使用环境变量 WORDPRESS_URL")
+            
+        if 'WORDPRESS_USERNAME' in os.environ:
+            self._config.setdefault('wordpress', {})['username'] = os.environ['WORDPRESS_USERNAME']
+            self.logger.info("使用环境变量 WORDPRESS_USERNAME")
+            
+        if 'WORDPRESS_PASSWORD' in os.environ:
+            self._config.setdefault('wordpress', {})['password'] = os.environ['WORDPRESS_PASSWORD']
+            self.logger.info("使用环境变量 WORDPRESS_PASSWORD")
+        
+        if 'WORDPRESS_VERIFY_SSL' in os.environ:
+            value = os.environ['WORDPRESS_VERIFY_SSL'].lower()
+            self._config.setdefault('wordpress', {})['verify_ssl'] = value not in ['false', '0', 'no']
+            self.logger.info(f"使用环境变量 WORDPRESS_VERIFY_SSL: {value}")
+        
+        # 七牛云配置
+        if 'QINIU_ACCESS_KEY' in os.environ:
+            self._config.setdefault('qiniu', {})['access_key'] = os.environ['QINIU_ACCESS_KEY']
+            self.logger.info("使用环境变量 QINIU_ACCESS_KEY")
+            
+        if 'QINIU_SECRET_KEY' in os.environ:
+            self._config.setdefault('qiniu', {})['secret_key'] = os.environ['QINIU_SECRET_KEY']
+            self.logger.info("使用环境变量 QINIU_SECRET_KEY")
+            
+        if 'QINIU_BUCKET' in os.environ:
+            self._config.setdefault('qiniu', {})['bucket'] = os.environ['QINIU_BUCKET']
+            self.logger.info("使用环境变量 QINIU_BUCKET")
+            
+        if 'QINIU_DOMAIN' in os.environ:
+            self._config.setdefault('qiniu', {})['domain'] = os.environ['QINIU_DOMAIN']
+            self.logger.info("使用环境变量 QINIU_DOMAIN")
         
     def _validate(self) -> None:
         """验证配置的必要字段"""

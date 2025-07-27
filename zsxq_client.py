@@ -8,6 +8,7 @@ import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
+from interfaces import ContentClient
 
 
 class ZsxqAPIError(Exception):
@@ -15,7 +16,7 @@ class ZsxqAPIError(Exception):
     pass
 
 
-class ZsxqClient:
+class ZsxqClient(ContentClient):
     """知识星球API客户端"""
     
     BASE_URL = "https://api.zsxq.com/v2"
@@ -112,6 +113,43 @@ class ZsxqClient:
         except Exception as e:
             self.logger.error(f"验证连接失败: {e}")
             return False
+    
+    def close(self) -> None:
+        """关闭连接并清理资源"""
+        if hasattr(self, 'session') and self.session:
+            self.session.close()
+            self.logger.info("知识星球客户端连接已关闭")
+    
+    def get_content(self, content_id: str) -> Dict[str, Any]:
+        """获取单个内容（实现接口方法）
+        
+        Args:
+            content_id: 内容ID
+            
+        Returns:
+            内容数据
+        """
+        return self.get_topic_detail(content_id)
+    
+    def get_all_content(self, 
+                       batch_size: int = 20,
+                       start_time: Optional[Any] = None,
+                       max_items: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取所有内容（实现接口方法）
+        
+        Args:
+            batch_size: 每批次大小
+            start_time: 开始时间
+            max_items: 最大数量
+            
+        Returns:
+            内容列表
+        """
+        return self.get_all_topics(
+            batch_size=batch_size,
+            start_time=start_time,
+            max_topics=max_items
+        )
             
     def get_topics(self, count: int = 20, end_time: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取主题列表

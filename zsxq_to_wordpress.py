@@ -9,7 +9,9 @@ import logging
 import sys
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from config_manager import Config, ConfigError
 from zsxq_client import ZsxqClient, ZsxqAPIError
@@ -17,6 +19,7 @@ from wordpress_client import WordPressClient, WordPressError
 from qiniu_uploader import QiniuUploader
 from content_processor import ContentProcessor
 from sync_state import SyncState, SyncStateError
+from log_utils import SensitiveFilter
 
 
 def setup_logging(verbose: bool = False):
@@ -33,15 +36,20 @@ def setup_logging(verbose: bool = False):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
+    # 创建敏感信息过滤器
+    sensitive_filter = SensitiveFilter()
+    
     # 控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.setLevel(level)
+    console_handler.addFilter(sensitive_filter)  # 添加过滤器
     
     # 文件处理器
     file_handler = logging.FileHandler('zsxq_sync.log', encoding='utf-8')
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
+    file_handler.addFilter(sensitive_filter)  # 添加过滤器
     
     # 配置根日志器
     logger = logging.getLogger()
@@ -73,6 +81,10 @@ class ZsxqToWordPressSync:
         # 初始化各个组件
         self._init_components()
         
+        # 并发控制
+        self._sync_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        
     def _init_components(self):
         """初始化各个组件"""
         # 知识星球客户端
@@ -88,7 +100,8 @@ class ZsxqToWordPressSync:
         self.wp_client = WordPressClient(
             url=self.config.wordpress['url'],
             username=self.config.wordpress['username'],
-            password=self.config.wordpress['password']
+            password=self.config.wordpress['password'],
+            verify_ssl=self.config.wordpress.get('verify_ssl', True)
         )
         
         # 七牛云上传器（可选）
@@ -173,7 +186,7 @@ class ZsxqToWordPressSync:
                 )
                 return False
                 
-            # 处理图片 - 添加详细调试日志
+            # 处理图片 - 使用批量处理优化
             processed_images = {}
             self.logger.debug(f"=== 图片处理调试 ===")
             self.logger.debug(f"文章图片列表: {article['images']}")
@@ -181,12 +194,13 @@ class ZsxqToWordPressSync:
             self.logger.debug(f"七牛云上传器状态: {'已配置' if self.qiniu_uploader else '未配置'}")
             
             if article['images'] and self.qiniu_uploader:
-                self.logger.info(f"处理 {len(article['images'])} 张图片...")
-                for i, img_url in enumerate(article['images']):
-                    self.logger.debug(f"处理第{i+1}张图片: {img_url}")
-                    new_url = self.qiniu_uploader.process_image(img_url)
-                    processed_images[img_url] = new_url
-                    self.logger.debug(f"图片处理结果: {img_url} -> {new_url}")
+                self.logger.info(f"批量处理 {len(article['images'])} 张图片...")
+                # 使用批量处理方法
+                processed_images = self.qiniu_uploader.process_images_batch(
+                    article['images'], 
+                    max_workers=min(3, len(article['images']))  # 动态调整并发数
+                )
+                self.logger.debug(f"批量处理结果: {processed_images}")
             elif not article['images']:
                 self.logger.debug("没有图片需要处理")
             elif not self.qiniu_uploader:
@@ -358,6 +372,121 @@ class ZsxqToWordPressSync:
             f"跳过: {stats['skipped']}\n"
             f"失败: {stats['failed']}"
         )
+        
+    def sync_topic_safe(self, topic: Dict[str, Any], stats: Dict[str, int]) -> bool:
+        """线程安全的同步单个主题
+        
+        Args:
+            topic: 主题数据
+            stats: 统计数据（线程共享）
+            
+        Returns:
+            是否同步成功
+        """
+        topic_id = str(topic.get('topic_id', ''))
+        
+        # 使用锁保护状态检查和更新
+        with self._sync_lock:
+            if self.sync_state.is_synced(topic_id):
+                self.logger.info(f"主题 {topic_id} 已同步，跳过")
+                with self._stats_lock:
+                    stats['skipped'] += 1
+                return False
+        
+        try:
+            result = self.sync_topic(topic)
+            
+            # 更新统计
+            with self._stats_lock:
+                if result:
+                    stats['success'] += 1
+                else:
+                    if self.sync_state.is_synced(topic_id):
+                        stats['skipped'] += 1
+                    else:
+                        stats['failed'] += 1
+                        
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"同步主题 {topic_id} 时发生错误: {e}")
+            with self._stats_lock:
+                stats['failed'] += 1
+            return False
+            
+    def sync_full_concurrent(self, max_workers: int = 3):
+        """执行并发全量同步
+        
+        Args:
+            max_workers: 最大并发工作线程数
+        """
+        self.logger.info(f"开始执行并发全量同步，最大工作线程数: {max_workers}")
+        
+        # 获取所有主题
+        try:
+            # 检查是否为测试模式（通过环境变量）
+            max_topics = None
+            if os.environ.get('ZSXQ_TEST_MODE'):
+                max_topics = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
+                self.logger.info(f"测试模式：最多同步 {max_topics} 条内容")
+                
+            topics = self.zsxq_client.get_all_topics(
+                batch_size=self.config.sync['batch_size'],
+                max_topics=max_topics
+            )
+            self.logger.info(f"获取到 {len(topics)} 个主题")
+        except ZsxqAPIError as e:
+            self.logger.error(f"获取主题失败: {e}")
+            return
+            
+        # 同步统计（线程共享）
+        stats = {
+            'total': len(topics),
+            'success': 0,
+            'failed': 0,
+            'skipped': 0
+        }
+        
+        # 使用线程池并发处理
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            futures = []
+            for i, topic in enumerate(topics):
+                future = executor.submit(self.sync_topic_safe, topic, stats)
+                futures.append((future, i + 1, topic))
+                
+            # 处理完成的任务
+            for future, index, topic in futures:
+                try:
+                    future.result()
+                    self.logger.info(f"进度: {index}/{stats['total']} - "
+                                   f"成功: {stats['success']}, "
+                                   f"失败: {stats['failed']}, "
+                                   f"跳过: {stats['skipped']}")
+                    
+                    # 定期保存状态
+                    if index % 10 == 0:
+                        with self._sync_lock:
+                            self.sync_state.save()
+                            
+                except Exception as e:
+                    self.logger.error(f"处理任务时发生错误: {e}")
+                    
+        # 更新最后同步时间
+        self.sync_state.update_last_sync_time()
+        
+        # 记录同步结果
+        self.sync_state.add_sync_record(stats)
+        self.sync_state.save()
+        
+        # 显示统计
+        self.logger.info(
+            f"\n并发全量同步完成！\n"
+            f"总计: {stats['total']}\n"
+            f"成功: {stats['success']}\n"
+            f"跳过: {stats['skipped']}\n"
+            f"失败: {stats['failed']}"
+        )
 
 
 def main():
@@ -367,9 +496,9 @@ def main():
     )
     parser.add_argument(
         '--mode',
-        choices=['full', 'incremental'],
+        choices=['full', 'incremental', 'concurrent'],
         default='incremental',
-        help='同步模式：full(全量) 或 incremental(增量)'
+        help='同步模式：full(全量) 或 incremental(增量) 或 concurrent(并发全量)'
     )
     parser.add_argument(
         '--config',
@@ -380,6 +509,12 @@ def main():
         '-v', '--verbose',
         action='store_true',
         help='显示详细日志'
+    )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=3,
+        help='并发模式下的最大工作线程数（默认: 3）'
     )
     
     args = parser.parse_args()
@@ -399,6 +534,8 @@ def main():
     try:
         if args.mode == 'full':
             syncer.sync_full()
+        elif args.mode == 'concurrent':
+            syncer.sync_full_concurrent(max_workers=args.workers)
         else:
             syncer.sync_incremental()
     except KeyboardInterrupt:

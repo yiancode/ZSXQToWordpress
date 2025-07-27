@@ -7,7 +7,8 @@
   "wordpress": {
     "url": "https://your-site.com/xmlrpc.php",
     "username": "your_username",
-    "password": "your_password"
+    "password": "your_password",
+    "verify_ssl": true
   },
   "qiniu": {
     "access_key": "",
