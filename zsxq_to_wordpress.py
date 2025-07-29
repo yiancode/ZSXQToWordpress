@@ -180,6 +180,13 @@ class ZsxqToWordPressSync:
             # 处理内容
             article = self.content_processor.process_topic(topic)
             self.logger.info(f"处理主题: {article['title']}")
+
+            # 应用来自 sync_target 的分类覆盖
+            sync_target_info = topic.get('_sync_target', {})
+            if sync_target_info.get('category_override'):
+                override_category = sync_target_info['category_override']
+                article['categories'] = [override_category]
+                self.logger.info(f"应用分类覆盖: {override_category}")
             
             # 检查WordPress中是否已存在相同标题的文章
             if self.wp_client.post_exists(article['title']):
@@ -252,71 +259,76 @@ class ZsxqToWordPressSync:
             self.logger.error(f"同步主题 {topic_id} 时发生错误: {e}")
             return False
             
+    def _fetch_all_target_topics(self, start_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """根据sync_targets配置获取所有主题"""
+        sync_targets = self.config.data.get('content_mapping', {}).get('sync_targets', [])
+        all_topics = []
+        seen_topic_ids = set()
+
+        max_topics_per_target = None
+        if os.environ.get('ZSXQ_TEST_MODE'):
+            max_topics_per_target = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
+            self.logger.info(f"测试模式：每个目标最多同步 {max_topics_per_target} 条内容")
+
+        for target in sync_targets:
+            if not target.get('enabled'):
+                continue
+
+            target_type = target.get('type')
+            target_value = target.get('value')
+            target_name = target.get('name', f"{target_type}:{target_value}")
+            self.logger.info(f"开始处理同步目标: {target_name}")
+
+            try:
+                topics = []
+                if target_type == 'scope':
+                    topics = self.zsxq_client.get_all_topics(
+                        batch_size=self.config.sync['batch_size'],
+                        start_time=start_time,
+                        max_topics=max_topics_per_target,
+                        scope=target_value
+                    )
+                elif target_type == 'column':
+                    topics = self.zsxq_client.get_all_topics_by_column(
+                        column_id=target_value,
+                        batch_size=self.config.sync['batch_size'],
+                        start_time=start_time,
+                        max_topics=max_topics_per_target
+                    )
+                elif target_type == 'hashtag':
+                    topics = self.zsxq_client.get_all_topics_by_hashtag(
+                        hashtag_id=target_value,
+                        batch_size=self.config.sync['batch_size'],
+                        start_time=start_time,
+                        max_topics=max_topics_per_target
+                    )
+                
+                for topic in topics:
+                    topic_id = str(topic.get('topic_id'))
+                    if topic_id not in seen_topic_ids:
+                        topic['_sync_target'] = target  # 附加来源信息
+                        all_topics.append(topic)
+                        seen_topic_ids.add(topic_id)
+
+                self.logger.info(f"目标 {target_name} 获取到 {len(topics)} 个新主题")
+
+            except ZsxqAPIError as e:
+                self.logger.error(f"从目标 {target_name} 获取主题失败: {e}")
+                continue
+        
+        # 按创建时间降序排序
+        all_topics.sort(key=lambda x: x.get('create_time', ''), reverse=True)
+        self.logger.info(f"所有目标总共获取到 {len(all_topics)} 个去重后的主题")
+        return all_topics
+
     def sync_full(self):
         """执行全量同步"""
         self.logger.info("开始执行全量同步...")
         
-        # 获取配置中的专栏映射
-        column_mapping = self.config.data.get('content_mapping', {}).get('columns', {})
-        enable_column_mapping = self.config.data.get('content_mapping', {}).get('enable_column_mapping', False)
-        
-        # 获取所有主题
-        all_topics = []
         try:
-            # 检查是否为测试模式（通过环境变量）
-            max_topics = None
-            if os.environ.get('ZSXQ_TEST_MODE'):
-                max_topics = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
-                self.logger.info(f"测试模式：最多同步 {max_topics} 条内容")
-            
-            # 只有在启用专栏映射且有配置的情况下才尝试获取专栏
-            if enable_column_mapping and column_mapping:
-                try:
-                    columns = self.zsxq_client.get_columns()
-                    self.logger.info(f"获取到 {len(columns)} 个专栏")
-                    
-                    # 遍历每个配置的专栏
-                    for column in columns:
-                        column_id = str(column['column_id'])
-                        column_name = column['name']
-                        
-                        # 检查是否在配置的映射中
-                        if column_id in column_mapping:
-                            self.logger.info(f"同步专栏: {column_name} (ID: {column_id})")
-                            
-                            column_topics = self.zsxq_client.get_all_topics_by_column(
-                                column_id=column_id,
-                                batch_size=self.config.sync['batch_size'],
-                                max_topics=max_topics
-                            )
-                            
-                            # 为每个topic添加专栏信息
-                            for topic in column_topics:
-                                topic['_column_id'] = column_id
-                                topic['_column_name'] = column_name
-                            
-                            all_topics.extend(column_topics)
-                            self.logger.info(f"专栏 {column_name} 获取到 {len(column_topics)} 个主题")
-                        else:
-                            self.logger.debug(f"跳过未配置的专栏: {column_name} (ID: {column_id})")
-                            
-                except ZsxqAPIError as e:
-                    self.logger.warning(f"获取专栏列表失败: {e}，改用传统方式获取内容")
-                    enable_column_mapping = False  # 强制使用传统方式
-            
-            # 如果没有启用专栏映射或专栏获取失败，使用传统方式获取所有内容
-            if not enable_column_mapping or not column_mapping or not all_topics:
-                self.logger.warning("未配置专栏映射或专栏获取失败，使用传统方式获取所有内容")
-                all_topics = self.zsxq_client.get_all_topics(
-                    batch_size=self.config.sync['batch_size'],
-                    max_topics=max_topics
-                )
-            
-            self.logger.info(f"总共获取到 {len(all_topics)} 个主题")
-            topics = all_topics
-            
-        except ZsxqAPIError as e:
-            self.logger.error(f"获取主题失败: {e}")
+            topics = self._fetch_all_target_topics()
+        except Exception as e:
+            self.logger.error(f"获取所有目标内容时发生严重错误: {e}")
             return
             
         # 同步统计
@@ -373,13 +385,10 @@ class ZsxqToWordPressSync:
         
         # 获取新内容
         try:
-            topics = self.zsxq_client.get_all_topics(
-                batch_size=self.config.sync['batch_size'],
-                start_time=last_sync_time
-            )
-            self.logger.info(f"获取到 {len(topics)} 个新主题")
-        except ZsxqAPIError as e:
-            self.logger.error(f"获取主题失败: {e}")
+            topics = self._fetch_all_target_topics(start_time=last_sync_time)
+            self.logger.info(f"增量同步：获取到 {len(topics)} 个新主题")
+        except Exception as e:
+            self.logger.error(f"获取所有目标内容时发生严重错误: {e}")
             return
             
         if not topics:
@@ -477,19 +486,9 @@ class ZsxqToWordPressSync:
         
         # 获取所有主题
         try:
-            # 检查是否为测试模式（通过环境变量）
-            max_topics = None
-            if os.environ.get('ZSXQ_TEST_MODE'):
-                max_topics = int(os.environ.get('ZSXQ_MAX_TOPICS', '2'))
-                self.logger.info(f"测试模式：最多同步 {max_topics} 条内容")
-                
-            topics = self.zsxq_client.get_all_topics(
-                batch_size=self.config.sync['batch_size'],
-                max_topics=max_topics
-            )
-            self.logger.info(f"获取到 {len(topics)} 个主题")
-        except ZsxqAPIError as e:
-            self.logger.error(f"获取主题失败: {e}")
+            topics = self._fetch_all_target_topics()
+        except Exception as e:
+            self.logger.error(f"获取所有目标内容时发生严重错误: {e}")
             return
             
         # 同步统计（线程共享）
@@ -569,6 +568,11 @@ def main():
         default=3,
         help='并发模式下的最大工作线程数（默认: 3）'
     )
+    parser.add_argument(
+        '--skip-validation',
+        action='store_true',
+        help='跳过连接验证直接开始同步（用于调试）'
+    )
     
     args = parser.parse_args()
     
@@ -578,10 +582,13 @@ def main():
     # 创建同步器
     syncer = ZsxqToWordPressSync(args.config)
     
-    # 验证连接
-    if not syncer.validate_connections():
-        logging.error("连接验证失败，请检查配置")
-        sys.exit(1)
+    # 验证连接（除非指定跳过）
+    if not args.skip_validation:
+        if not syncer.validate_connections():
+            logging.error("连接验证失败，请检查配置")
+            sys.exit(1)
+    else:
+        logging.warning("已跳过连接验证，直接开始同步")
         
     # 执行同步
     try:

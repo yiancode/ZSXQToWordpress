@@ -120,7 +120,9 @@ class ContentProcessor:
         if sync_title:
             title = self._generate_title(topic)
         else:
-            title = ""  # 不同步标题时设置为空
+            # 不同步标题时使用配置中的占位标题
+            placeholder_title = article_settings.get('placeholder_title', '无标题')
+            title = placeholder_title
         
         # 处理内容 - 传递标题以便去重
         processed_content = self._process_content(text_content, title)
@@ -191,7 +193,9 @@ class ContentProcessor:
         if sync_title:
             title = self._generate_topic_title(topic, text_content)
         else:
-            title = ""  # 不同步标题时设置为空
+            # 不同步标题时使用配置中的占位标题
+            placeholder_title = topic_settings.get('placeholder_title', '無标题')
+            title = placeholder_title
         
         # 处理短内容
         processed_content = self._process_topic_text(text_content)
@@ -207,15 +211,19 @@ class ContentProcessor:
         
         # 获取主题设置
         topic_settings = self.config.get('content_mapping', {}).get('topic_settings', {})
-        default_category = topic_settings.get('category', '主题')
-        
-        # 如果没有分类，使用默认分类
-        if not categories:
-            categories = [default_category]
+        # 注意：这里的分类已经在 _determine_categories 中处理了，不需要再次设置
         
         # 获取post类型设置
         post_types = self.config.get('content_mapping', {}).get('post_types', {})
-        topic_post_type = post_types.get('topic', 'post')
+        # 检查是否使用自定义文章类型
+        use_custom_post_type = topic_settings.get('use_custom_post_type', True)
+        if use_custom_post_type:
+            topic_post_type = post_types.get('topic', 'moment')
+        else:
+            topic_post_type = 'post'  # 使用标准文章类型
+            
+        # 添加post_type设置的调试信息
+        self.logger.info(f"[DEBUG] post_type设置 - use_custom_post_type: {use_custom_post_type}, topic_post_type: {topic_post_type}, 配置中的topic类型: {post_types.get('topic', 'moment')}")
         
         # 构建短内容数据
         short_content = {
@@ -709,15 +717,18 @@ class ContentProcessor:
         if content_type == 'article':
             # 文章类型使用 article_settings 中的分类
             article_settings = config_mapping.get('article_settings', {})
-            default_category = article_settings.get('category', '文章')
+            default_category = article_settings.get('default_classification', article_settings.get('category', 'Trending'))
         else:
             # 主题类型使用 topic_settings 中的分类
             topic_settings = config_mapping.get('topic_settings', {})
-            default_category = topic_settings.get('category', '主题')
+            default_category = topic_settings.get('default_classification', topic_settings.get('category', 'Trending'))
         
         # 如果没有分类，使用内容类型对应的默认分类
         if not categories:
             categories.append(default_category)
+            
+        # 调试日志：输出分类设置
+        self.logger.info(f"[DEBUG] 内容类型: {content_type}, 默认分类: {default_category}, 最终分类: {categories}")
             
         return categories
         

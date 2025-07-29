@@ -171,6 +171,71 @@ QINIU_DOMAIN=your_cdn_domain
 3. **user_agent**：
    - 复制开发者工具中Request Headers的User-Agent完整字符串
 
+### 配置同步目标 (`sync_targets`)
+
+从v2.0开始，本工具引入了强大的 `sync_targets` 配置，允许你精确、灵活地定义要同步的内容来源。你可以组合多个目标，程序会自动合并和去重。
+
+该配置项位于 `content_mapping` 块内，取代了旧的专栏同步配置。
+
+**配置结构**
+
+```json
+"content_mapping": {
+  "sync_targets": [
+    {
+      "type": "scope",
+      "value": "all",
+      "enabled": true,
+      "name": "所有内容"
+    },
+    {
+      "type": "scope",
+      "value": "digests",
+      "enabled": false,
+      "name": "精华内容",
+      "category_override": "精华"
+    },
+    {
+      "type": "column",
+      "value": "YOUR_COLUMN_ID",
+      "enabled": false,
+      "name": "专栏：我的第一个专栏"
+    },
+    {
+      "type": "hashtag",
+      "value": "YOUR_HASHTAG_ID",
+      "enabled": false,
+      "name": "标签：我的第一个标签",
+      "category_override": "标签分类"
+    }
+  ],
+  // ... 其他配置
+}
+```
+
+**字段说明**
+
+- **`type`** (必填): 同步目标的类型。
+  - `"scope"`: 按范围同步。
+  - `"column"`: 按专栏ID同步。
+  - `"hashtag"`: 按标签ID同步。
+- **`value`** (必填): 目标类型对应的值。
+  - 当 `type` 为 `scope` 时, `value` 可为 `"all"` (所有) 或 `"digests"` (精华)。
+  - 当 `type` 为 `column` 或 `hashtag` 时, `value` 为对应的ID。
+- **`enabled`** (必填): `true` 或 `false`，决定是否启用该同步目标。
+- **`name`** (可选): 为该目标指定一个易于理解的名称，会显示在日志中。
+- **`category_override`** (可选): 强制将从该目标获取的所有内容发布到WordPress的这个指定分类下，覆盖默认的分类逻辑。
+
+### 内容分类配置
+
+**topic_settings** 和 **article_settings** 支持以下配置：
+
+- **`category`**: 主要分类名称（当内容有分类时使用）
+- **`default_category`**: 默认分类名称（当内容没有分类时使用，默认为"Trending"）
+- **`sync_title`**: 是否同步标题（true/false）
+- **`placeholder_title`**: 当 `sync_title` 为 false 时使用的占位标题（默认为"无标题"）
+- **`use_custom_post_type`**: 是否使用自定义文章类型（仅topic_settings支持）
+
 ### WordPress配置
 
 1. **确保XML-RPC启用**：

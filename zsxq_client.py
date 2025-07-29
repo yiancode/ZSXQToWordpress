@@ -83,10 +83,15 @@ class ZsxqClient(ContentClient):
                         return data
                     else:
                         error_msg = data.get('msg') or data.get('error') or '未知错误'
+                        error_code = data.get('code', 0)
                         self.logger.error(f"API响应错误，完整响应: {data}")
-                        if data.get('code') == 401:
+                        if error_code == 401:
                             raise ZsxqAPIError("认证失败，请检查access_token是否有效")
-                        raise ZsxqAPIError(f"API返回错误: {error_msg}")
+                        elif error_code == 1059:
+                            # 1059错误通常是分页相关的临时错误，允许上层处理重试
+                            raise ZsxqAPIError(f"API返回错误(code:{error_code}): {error_msg}")
+                        else:
+                            raise ZsxqAPIError(f"API返回错误: {error_msg}")
                         
                 elif response.status_code == 401:
                     raise ZsxqAPIError("认证失败，请检查access_token是否有效")
@@ -161,20 +166,24 @@ class ZsxqClient(ContentClient):
             max_topics=max_items
         )
             
-    def get_topics(self, count: int = 20, end_time: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_topics(self, count: int = 20, end_time: Optional[str] = None, scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取主题列表
         
         Args:
             count: 获取数量
             end_time: 结束时间（用于分页）
+            scope: 筛选范围 (e.g., "all", "digests")
             
         Returns:
             主题列表
         """
         url = f"{self.BASE_URL}/groups/{self.group_id}/topics"
         params = {
-            'count': min(count, 50)  # API限制最多50条，移除scope参数
+            'count': min(count, 50)
         }
+
+        if scope:
+            params['scope'] = scope
         
         if end_time:
             params['end_time'] = end_time
@@ -188,15 +197,17 @@ class ZsxqClient(ContentClient):
             
         return topics
         
-    def get_all_topics(self, batch_size: int = 20, 
-                      start_time: Optional[datetime] = None,
-                      max_topics: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_all_topics(self, batch_size: int = 20,
+                       start_time: Optional[datetime] = None,
+                       max_topics: Optional[int] = None,
+                       scope: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取所有主题（支持分页）
         
         Args:
             batch_size: 每批获取数量
             start_time: 开始时间（用于增量同步）
             max_topics: 最大获取数量（用于测试）
+            scope: 筛选范围 (e.g., "all", "digests")
             
         Returns:
             所有主题列表
@@ -205,27 +216,46 @@ class ZsxqClient(ContentClient):
         end_time = None
         total_fetched = 0
         
+        log_prefix = f"范围 '{scope}': " if scope else ""
+        
         while True:
             # 检查是否达到最大数量限制
             if max_topics and len(all_topics) >= max_topics:
-                self.logger.info(f"已达到最大获取数量 {max_topics}，停止获取")
+                self.logger.info(f"{log_prefix}已达到最大获取数量 {max_topics}，停止获取")
                 break
                 
-            # 计算本次批次大小
-            current_batch_size = batch_size
-            if max_topics:
-                remaining = max_topics - len(all_topics)
-                current_batch_size = min(batch_size, remaining)
+            # 计算本次批次大小，确保不小于20（除非剩余数量不足20）
+            remaining = max_topics - len(all_topics) if max_topics else float('inf')
+            current_batch_size = max(20, min(batch_size, remaining)) if remaining >= 20 else remaining
+            
+            if current_batch_size <= 0:
+                break
                 
-            self.logger.info(f"获取第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
-            try:
-                topics = self.get_topics(count=current_batch_size, end_time=end_time)
-            except ZsxqAPIError as e:
-                if 'code' in str(e) and '1059' in str(e):
-                    self.logger.warning(f"API分页错误，停止获取。已获取 {len(all_topics)} 条内容")
-                    break
-                else:
-                    raise
+            self.logger.info(f"{log_prefix}获取第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
+            # 多重重试机制
+            topics = None
+            for retry_attempt in range(3):  # 最多重试3次
+                try:
+                    topics = self.get_topics(count=int(current_batch_size), end_time=end_time, scope=scope)
+                    break  # 成功获取，跳出重试循环
+                except ZsxqAPIError as e:
+                    if 'code' in str(e) and '1059' in str(e):
+                        retry_delay = (retry_attempt + 1) * 15  # 递增延迟：15s, 30s, 45s
+                        self.logger.warning(f"{log_prefix}API分页错误(1059)，第 {retry_attempt + 1}/3 次重试，等待 {retry_delay}秒...")
+                        
+                        if retry_attempt < 2:  # 不是最后一次重试
+                            time.sleep(retry_delay)
+                        else:
+                            self.logger.error(f"{log_prefix}连续重试失败，停止获取。已获取 {len(all_topics)} 条内容")
+                            return all_topics  # 直接返回已获取的内容
+                    else:
+                        self.logger.error(f"{log_prefix}API请求失败: {e}")
+                        raise
+                        
+            # 检查是否成功获取到数据
+            if topics is None:
+                self.logger.warning(f"{log_prefix}未能获取到数据，停止获取")
+                break
             
             if not topics:
                 break
@@ -366,11 +396,12 @@ class ZsxqClient(ContentClient):
                 self.logger.info(f"已达到最大获取数量 {max_topics}，停止获取")
                 break
                 
-            # 计算本次批次大小
-            current_batch_size = batch_size
-            if max_topics:
-                remaining = max_topics - len(all_topics)
-                current_batch_size = min(batch_size, remaining)
+            # 计算本次批次大小，确保不小于20（除非剩余数量不足20）
+            remaining = max_topics - len(all_topics) if max_topics else float('inf')
+            current_batch_size = max(20, min(batch_size, remaining)) if remaining >= 20 else remaining
+            
+            if current_batch_size <= 0:
+                break
                 
             self.logger.info(f"获取专栏 {column_id} 第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
             try:
@@ -464,3 +495,110 @@ class ZsxqClient(ContentClient):
         except Exception as e:
             self.logger.error(f"获取专栏映射失败: {e}")
             return {}
+
+    def get_topics_by_hashtag(self, hashtag_id: str, count: int = 20, end_time: Optional[str] = None) -> List[Dict[str, Any]]:
+        """按标签获取主题列表
+        
+        Args:
+            hashtag_id: 标签ID
+            count: 获取数量
+            end_time: 结束时间（用于分页）
+            
+        Returns:
+            主题列表
+        """
+        url = f"{self.BASE_URL}/hashtags/{hashtag_id}/topics"
+        params = {
+            'count': min(count, 50)
+        }
+        
+        if end_time:
+            params['end_time'] = end_time
+            
+        response = self._make_request('GET', url, params=params)
+        topics = response.get('resp_data', {}).get('topics', [])
+        
+        # 添加请求延迟
+        if self.delay_seconds > 0:
+            time.sleep(self.delay_seconds)
+            
+        return topics
+
+    def get_all_topics_by_hashtag(self, hashtag_id: str, batch_size: int = 20,
+                                 start_time: Optional[datetime] = None,
+                                 max_topics: Optional[int] = None) -> List[Dict[str, Any]]:
+        """获取指定标签下的所有主题（支持分页）
+        
+        Args:
+            hashtag_id: 标签ID
+            batch_size: 每批获取数量
+            start_time: 开始时间（用于增量同步）
+            max_topics: 最大获取数量（用于测试）
+            
+        Returns:
+            所有主题列表
+        """
+        all_topics = []
+        end_time = None
+        total_fetched = 0
+        
+        while True:
+            # 检查是否达到最大数量限制
+            if max_topics and len(all_topics) >= max_topics:
+                self.logger.info(f"已达到最大获取数量 {max_topics}，停止获取")
+                break
+                
+            # 计算本次批次大小，确保不小于20（除非剩余数量不足20）
+            remaining = max_topics - len(all_topics) if max_topics else float('inf')
+            current_batch_size = max(20, min(batch_size, remaining)) if remaining >= 20 else remaining
+            
+            if current_batch_size <= 0:
+                break
+                
+            self.logger.info(f"获取标签 {hashtag_id} 第 {total_fetched + 1} - {total_fetched + current_batch_size} 条内容")
+            try:
+                topics = self.get_topics_by_hashtag(hashtag_id, count=current_batch_size, end_time=end_time)
+            except ZsxqAPIError as e:
+                if 'code' in str(e) and '1059' in str(e):
+                    self.logger.warning(f"API分页错误，停止获取。已获取 {len(all_topics)} 条内容")
+                    break
+                else:
+                    raise
+            
+            if not topics:
+                break
+                
+            # 过滤开始时间之前的内容
+            if start_time:
+                filtered_topics = []
+                for topic in topics:
+                    create_time_str = topic.get('create_time', '')
+                    if create_time_str:
+                        create_time = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
+                        # 确保start_time也是aware datetime
+                        if start_time.tzinfo is None:
+                            from datetime import timezone
+                            start_time = start_time.replace(tzinfo=timezone.utc)
+                        if create_time <= start_time:
+                            self.logger.info(f"遇到早于 {start_time} 的内容，停止获取")
+                            all_topics.extend(filtered_topics)
+                            return all_topics
+                    filtered_topics.append(topic)
+                topics = filtered_topics
+                
+            all_topics.extend(topics)
+            total_fetched += len(topics)
+            
+            # 获取最后一条的时间作为下一页的结束时间
+            if len(topics) < batch_size:
+                break
+                
+            last_topic = topics[-1]
+            end_time = last_topic.get('create_time')
+            if not end_time:
+                break
+                
+            self.logger.info(f"标签 {hashtag_id} 已获取 {total_fetched} 条内容，继续获取...")
+            
+        self.logger.info(f"标签 {hashtag_id} 总共获取了 {len(all_topics)} 条内容")
+        return all_topics

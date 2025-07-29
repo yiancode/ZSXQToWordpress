@@ -120,7 +120,42 @@ class Config:
             raise ConfigError("delay_seconds不能为负数")
         if sync.get('max_retries', 5) < 0:
             raise ConfigError("max_retries不能为负数")
+        
+        self._validate_sync_targets()
+
+    def _validate_sync_targets(self) -> None:
+        """验证 sync_targets 配置"""
+        content_mapping = self._config.get('content_mapping', {})
+        sync_targets = content_mapping.get('sync_targets')
+
+        if sync_targets is None:
+            self.logger.warning("配置文件中缺少 sync_targets，将不会从任何特定目标同步内容。")
+            return
+
+        if not isinstance(sync_targets, list):
+            raise ConfigError("sync_targets 必须是一个列表")
+
+        if not sync_targets:
+            self.logger.warning("sync_targets 为空，将不会从任何特定目标同步内容。")
+
+        allowed_types = {"scope", "column", "hashtag"}
+
+        for i, target in enumerate(sync_targets):
+            if not isinstance(target, dict):
+                raise ConfigError(f"sync_targets 中的第 {i+1} 个目标必须是一个字典")
+
+            if 'type' not in target:
+                raise ConfigError(f"sync_targets 中的第 {i+1} 个目标缺少 'type' 键")
             
+            if target['type'] not in allowed_types:
+                raise ConfigError(f"sync_targets 中的第 {i+1} 个目标 'type' 值无效，必须是 {allowed_types} 之一")
+
+            if 'value' not in target or not target['value']:
+                raise ConfigError(f"sync_targets 中的第 {i+1} 个目标缺少 'value' 键或值为空")
+                
+            if 'enabled' not in target or not isinstance(target['enabled'], bool):
+                raise ConfigError(f"sync_targets 中的第 {i+1} 个目标缺少 'enabled' 键或值不是布尔型")
+
     @property
     def zsxq(self) -> Dict[str, Any]:
         """获取知识星球配置"""

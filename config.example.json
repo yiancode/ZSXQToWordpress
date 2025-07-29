@@ -31,19 +31,47 @@
     "topic_types": ["talk", "q&a-question", "q&a-answer"],
     "topic_settings": {
       "category": "主题",
+      "default_category": "Trending",
       "max_title_length": 30,
       "use_custom_post_type": true,
       "title_prefix": "",
-      "sync_title": false
+      "sync_title": false,
+      "placeholder_title": "无标题"
     },
     "article_settings": {
       "category": "文章",
-      "sync_title": true
+      "default_category": "Trending",
+      "sync_title": true,
+      "placeholder_title": "无标题"
     },
-    "enable_column_mapping": true,
-    "column_sync_mode": "all",
-    "columns": {},
-    "auto_discover_columns": true,
+    "sync_targets": [
+      {
+        "type": "scope",
+        "value": "all",
+        "enabled": true,
+        "name": "所有内容"
+      },
+      {
+        "type": "scope",
+        "value": "digests",
+        "enabled": false,
+        "name": "精华内容",
+        "category_override": "精华"
+      },
+      {
+        "type": "column",
+        "value": "YOUR_COLUMN_ID",
+        "enabled": false,
+        "name": "专栏：我的第一个专栏"
+      },
+      {
+        "type": "hashtag",
+        "value": "YOUR_HASHTAG_ID",
+        "enabled": false,
+        "name": "标签：我的第一个标签",
+        "category_override": "标签分类"
+      }
+    ],
     "special_categories": {
       "digested": "精华",
       "sticky": "置顶"

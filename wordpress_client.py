@@ -184,17 +184,31 @@ class WordPressClient(PublishClient):
         # 在内容中添加片刻标识
         content = f'<div class="moment-content">{content_data["content"]}</div>'
         
-        # 获取标签和分类
-        tags = content_data.get('tags', [])
-        categories = content_data.get('categories', ['片刻'])
-        
         # 获取post类型
         post_type = content_data.get('post_type', 'post')
+        
+        # 获取标签和分类 - moment类型使用moments分类法
+        tags = content_data.get('tags', [])
+        categories = None
+        moment_categories = None
+        
+        if post_type == 'moment':
+            # moment类型使用moments分类法
+            moment_categories = content_data.get('categories', [])
+            if moment_categories:
+                self.logger.info(f"[DEBUG] moment类型使用moments分类法: {moment_categories}")
+            else:
+                self.logger.info(f"[DEBUG] moment类型未设置分类")
+        else:
+            # 非moment类型使用标准category分类法
+            categories = content_data.get('categories', ['片刻'])
+            self.logger.info(f"[DEBUG] 标准文章类型使用category分类法: {categories}")
         
         return self.create_post(
             title=title,
             content=content,
             categories=categories,
+            moment_categories=moment_categories,
             tags=tags,
             post_type=post_type,
             status='publish'
@@ -204,6 +218,7 @@ class WordPressClient(PublishClient):
             
     def create_post(self, title: str, content: str,
                    categories: Optional[List[str]] = None,
+                   moment_categories: Optional[List[str]] = None,
                    tags: Optional[List[str]] = None,
                    post_type: str = 'post',
                    status: str = 'publish') -> str:
@@ -212,7 +227,8 @@ class WordPressClient(PublishClient):
         Args:
             title: 文章标题
             content: 文章内容
-            categories: 分类列表
+            categories: 标准分类列表 (用于post类型)
+            moment_categories: moment分类列表 (用于moment类型)
             tags: 标签列表
             post_type: 文章类型 (post/moment等)
             status: 发布状态 (publish/draft)
@@ -230,7 +246,7 @@ class WordPressClient(PublishClient):
         post.post_type = post_type
         post.comment_status = 'open'
         
-        # 处理分类 - 使用更简单的方式避免序列化问题
+        # 处理标准分类 (用于post类型)
         if categories:
             try:
                 # 确保分类存在
@@ -241,9 +257,25 @@ class WordPressClient(PublishClient):
                 if not hasattr(post, 'terms_names'):
                     post.terms_names = {}
                 post.terms_names['category'] = categories
-                self.logger.info(f"设置分类: {categories}")
+                self.logger.info(f"设置标准分类: {categories}")
             except Exception as e:
-                self.logger.error(f"设置分类时出错: {e}")
+                self.logger.error(f"设置标准分类时出错: {e}")
+                # 继续发布文章，即使分类设置失败
+        
+        # 处理moment分类 (用于moment类型)
+        if moment_categories:
+            try:
+                # 确保moment分类存在
+                for cat_name in moment_categories:
+                    self._get_or_create_moment_category(cat_name)
+                
+                # 使用moments分类法
+                if not hasattr(post, 'terms_names'):
+                    post.terms_names = {}
+                post.terms_names['moments'] = moment_categories
+                self.logger.info(f"设置moment分类: {moment_categories}")
+            except Exception as e:
+                self.logger.error(f"设置moment分类时出错: {e}")
                 # 继续发布文章，即使分类设置失败
         
         # 处理标签 - 使用更简单的方式避免序列化问题
@@ -256,9 +288,9 @@ class WordPressClient(PublishClient):
                     self.logger.error(f"处理标签 '{tag_name}' 时出错: {e}")
             
             # 使用简单的字符串列表而不是WordPressTerm对象
-            post.terms_names = {
-                'post_tag': tags
-            }
+            if not hasattr(post, 'terms_names'):
+                post.terms_names = {}
+            post.terms_names['post_tag'] = tags
         
         try:
             post_id = self.client.call(posts.NewPost(post))
@@ -333,6 +365,43 @@ class WordPressClient(PublishClient):
             
         except Exception as e:
             self.logger.error(f"创建分类失败: {name}, 错误: {e}")
+            return None
+
+    def _get_or_create_moment_category(self, name: str) -> Optional[int]:
+        """获取或创建moment分类 (使用moments分类法)
+        
+        Args:
+            name: moment分类名称
+            
+        Returns:
+            moment分类ID
+        """
+        # 使用独立的缓存键前缀避免与标准分类冲突
+        cache_key = f"moment_{name}"
+        if cache_key in self._category_cache:
+            return self._category_cache[cache_key]
+            
+        try:
+            # 获取所有moment分类
+            moment_categories = self.client.call(taxonomies.GetTerms('moments'))
+            
+            # 查找是否已存在
+            for cat in moment_categories:
+                if cat.name == name:
+                    self._category_cache[cache_key] = int(cat.id)
+                    return int(cat.id)
+                    
+            # 创建新moment分类
+            new_cat = WordPressTerm()
+            new_cat.taxonomy = 'moments'
+            new_cat.name = name
+            cat_id = self.client.call(taxonomies.NewTerm(new_cat))
+            self._category_cache[cache_key] = cat_id
+            self.logger.info(f"创建新moment分类: {name} (ID: {cat_id})")
+            return cat_id
+            
+        except Exception as e:
+            self.logger.error(f"创建moment分类失败: {name}, 错误: {e}")
             return None
             
     def _get_or_create_tag(self, name: str) -> Optional[int]:
