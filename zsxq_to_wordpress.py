@@ -177,6 +177,35 @@ class ZsxqToWordPressSync:
             return False
             
         try:
+            # 获取配置
+            fetch_article_details = self.config.sync.get('fetch_article_details', True)
+            detail_fetch_retries = self.config.sync.get('detail_fetch_retries', 2)
+            
+            # 处理内容 - 对文章类型获取详细信息
+            content_type = self.content_processor._determine_content_type(topic)
+            if content_type == 'article' and fetch_article_details:
+                topic_id = str(topic.get('topic_id', ''))
+                self.logger.info(f"检测到文章类型，获取详细内容: {topic_id}")
+                
+                # 获取详细的主题信息（带重试机制）
+                for attempt in range(detail_fetch_retries):
+                    try:
+                        detailed_topic = self.zsxq_client.get_topic_detail(topic_id)
+                        if detailed_topic:
+                            # 使用详细信息替换原始topic数据
+                            topic = detailed_topic
+                            self.logger.info(f"成功获取详细内容，内容长度: {len(str(detailed_topic))}")
+                            break
+                        else:
+                            self.logger.warning(f"无法获取主题 {topic_id} 的详细信息，使用原始数据")
+                            break
+                    except Exception as e:
+                        if attempt == detail_fetch_retries - 1:
+                            self.logger.error(f"获取主题 {topic_id} 详细信息失败（已重试{detail_fetch_retries}次）: {e}，使用原始数据")
+                        else:
+                            self.logger.warning(f"获取主题 {topic_id} 详细信息失败（第{attempt+1}次尝试）: {e}")
+                            time.sleep(1)  # 重试前等待1秒
+            
             # 处理内容
             article = self.content_processor.process_topic(topic)
             self.logger.info(f"处理主题: {article['title']}")

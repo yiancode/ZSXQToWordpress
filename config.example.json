@@ -19,7 +19,9 @@
   "sync": {
     "batch_size": 20,
     "delay_seconds": 2,
-    "max_retries": 5
+    "max_retries": 5,
+    "fetch_article_details": true,
+    "detail_fetch_retries": 2
   },
   "source": {
     "name": "YOUR_ZSXQ_GROUP_NAME",

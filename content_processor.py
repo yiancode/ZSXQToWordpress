@@ -5,6 +5,8 @@
 """
 import re
 import logging
+import urllib.parse
+from urllib.parse import urlparse
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
@@ -26,7 +28,6 @@ def parse_datetime_safe(date_string: str) -> datetime:
         date_string = date_string.replace('Z', '+00:00')
     
     # 处理+HHMM格式的时区，转换为+HH:MM格式
-    import re
     # 匹配形如 +0800 或 -0800 的时区格式
     tz_pattern = r'([+-])(\d{2})(\d{2})$'
     match = re.search(tz_pattern, date_string)
@@ -53,6 +54,29 @@ class ContentProcessor:
         """
         self.logger = logging.getLogger(__name__)
         self.config = config or {}
+        
+        # 预编译常用正则表达式以提升性能
+        self._re_mention = re.compile(r'<e type="mention"[^>]*>(@[^<]+)</e>')
+        self._re_hashtag = re.compile(r'<e type="hashtag"[^>]*>#([^<]+)#</e>')
+        self._re_web_link = re.compile(r'<e type="web"[^>]*/>')
+        self._re_text_bold = re.compile(r'<e type="text_bold" title="([^"]*)"[^>]*/>')
+        self._re_text_italic = re.compile(r'<e type="text_italic" title="([^"]*)"[^>]*/>')
+        self._re_text_delete = re.compile(r'<e type="text_delete" title="([^"]*)"[^>]*/>')
+        self._re_text_generic = re.compile(r'<e type="[^"]*" title="([^"]*)"[^>]*/>')
+        self._re_html_tags = re.compile(r'<[^>]*>')
+        self._re_whitespace = re.compile(r'\s+')
+        self._re_hashtag_html = re.compile(r'<e type="hashtag"[^>]*title="([^"]*)"[^>]*/?>')
+        self._re_hashtag_plain = re.compile(r'#([^#\s]+)#')
+        self._re_href = re.compile(r'href="([^"]*)"')
+        self._re_title = re.compile(r'title="([^"]*)"')
+        self._re_punctuation = re.compile(r'[^\w\s]')
+        
+        # 知识星球页脚匹配模式
+        self._re_footer_patterns = [
+            re.compile(r'——\s*发布于\s*.+?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*', re.MULTILINE),
+            re.compile(r'—\s*发布于\s*.+?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*', re.MULTILINE),
+            re.compile(r'发布于\s*.+?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*', re.MULTILINE),
+        ]
         
     def process_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
         """处理单个主题，转换为WordPress内容格式（支持文章和片刻）
@@ -305,9 +329,8 @@ class ContentProcessor:
                 text_content = topic['content'].get('text', '')
         
         # 清理文本，去除HTML标签和特殊字符
-        import re
-        clean_text = re.sub(r'<[^>]*>', '', text_content)  # 去除HTML标签
-        clean_text = re.sub(r'\s+', ' ', clean_text).strip()  # 规范化空白字符
+        clean_text = self._re_html_tags.sub('', text_content)  # 去除HTML标签
+        clean_text = self._re_whitespace.sub(' ', clean_text).strip()  # 规范化空白字符
         
         if clean_text:
             # 使用内容前缀作为标题
@@ -345,32 +368,19 @@ class ContentProcessor:
         if not text:
             return ""
         
+        # 清理知识星球页脚
+        text = self._remove_zsxq_footer(text)
+        
         # 基本的内容处理（比文章处理更简化）
-        import urllib.parse
         
         # 处理@提及 - 转换为普通文本
-        processed = re.sub(r'<e type="mention"[^>]*>(@[^<]+)</e>', r'\1', text)
+        processed = self._re_mention.sub(r'\1', text)
         
         # 处理话题标签
-        processed = re.sub(r'<e type="hashtag"[^>]*>#([^<]+)#</e>', r'#\1#', processed)
+        processed = self._re_hashtag.sub(r'#\1#', processed)
         
-        # 处理链接（简化版）
-        def replace_link(match):
-            full_tag = match.group(0)
-            href_match = re.search(r'href="([^"]*)"', full_tag)
-            title_match = re.search(r'title="([^"]*)"', full_tag)
-            
-            if href_match:
-                url = urllib.parse.unquote(href_match.group(1))
-                if title_match:
-                    link_text = urllib.parse.unquote(title_match.group(1))
-                else:
-                    link_text = url
-                return f'<a href="{url}" target="_blank">{link_text}</a>'
-            else:
-                return full_tag
-        
-        processed = re.sub(r'<e type="web"[^>]*/>', replace_link, processed)
+        # 使用智能链接处理方式
+        processed = self._re_web_link.sub(self._replace_smart_link, processed)
         
         # 短内容保持简洁，只转换必要的换行
         processed = processed.replace('\n\n', '</p><p>')
@@ -413,6 +423,9 @@ class ContentProcessor:
         if lines and lines[0]:
             first_line = lines[0].strip()
             
+            # 处理知识星球HTML标签
+            first_line = self._process_zsxq_tags(first_line)
+            
             # 改进的标题判断逻辑
             if len(first_line) <= 80 and not first_line.endswith(('。', '！', '？', '，', '、')):
                 # 智能截断：在合适的位置截断，避免简单字符截断
@@ -431,7 +444,7 @@ class ContentProcessor:
                     title = first_line
                     
                 # 记录原始第一行，用于后续去重
-                self._title_source_line = first_line
+                self._title_source_line = lines[0].strip()  # 保存原始未处理的行
                 return title
                 
         # 如果第一行不适合做标题，尝试提取关键信息
@@ -480,41 +493,20 @@ class ContentProcessor:
         # 【增强去重逻辑】智能处理各种重复情况
         text = self._remove_title_duplication(text, title)
         
-        import urllib.parse
+        # 清理知识星球页脚
+        text = self._remove_zsxq_footer(text)
+        
+        # 处理知识星球特有的HTML标签
+        processed = self._process_zsxq_tags(text)
         
         # 处理@提及 - 转换为普通文本
-        processed = re.sub(r'<e type="mention"[^>]*>(@[^<]+)</e>', r'\1', text)
+        processed = re.sub(r'<e type="mention"[^>]*>(@[^<]+)</e>', r'\1', processed)
         
         # 处理话题标签
-        processed = re.sub(r'<e type="hashtag"[^>]*>#([^<]+)#</e>', r'#\1#', processed)
+        processed = self._re_hashtag.sub(r'#\1#', processed)
         
-        # 处理链接 - 新的处理方式
-        def replace_link(match):
-            """替换链接标签为HTML链接"""
-            full_tag = match.group(0)
-            
-            # 提取href和title属性
-            href_match = re.search(r'href="([^"]*)"', full_tag)
-            title_match = re.search(r'title="([^"]*)"', full_tag)
-            
-            if href_match:
-                # URL解码
-                encoded_url = href_match.group(1)
-                url = urllib.parse.unquote(encoded_url)
-                
-                # 获取链接文本
-                if title_match:
-                    link_text = urllib.parse.unquote(title_match.group(1))
-                else:
-                    link_text = url
-                
-                return f'<a href="{url}" target="_blank">{link_text}</a>'
-            else:
-                # 如果没有href，返回原文本
-                return full_tag
-        
-        # 使用新的链接处理方式
-        processed = re.sub(r'<e type="web"[^>]*/>', replace_link, processed)
+        # 使用智能链接处理方式
+        processed = self._re_web_link.sub(self._replace_smart_link, processed)
         
         # 处理换行 - 保持段落结构
         paragraphs = processed.split('\n\n')
@@ -586,6 +578,133 @@ class ContentProcessor:
             
         return False
     
+    def _process_zsxq_tags(self, text: str) -> str:
+        """处理知识星球特有的HTML标签
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            处理后的文本
+        """
+        if not text:
+            return text
+            
+        # 处理文本格式标签
+        processed = text
+        
+        # 处理粗体标签 <e type="text_bold" title="文本内容" />
+        processed = self._re_text_bold.sub(r'**\1**', processed)
+        
+        # 处理斜体标签 <e type="text_italic" title="文本内容" />
+        processed = self._re_text_italic.sub(r'*\1*', processed)
+        
+        # 处理删除线标签 <e type="text_delete" title="文本内容" />
+        processed = self._re_text_delete.sub(r'~~\1~~', processed)
+        
+        # 处理其他未知的e标签，提取title内容
+        processed = self._re_text_generic.sub(r'\1', processed)
+        
+        return processed
+    
+    def _remove_zsxq_footer(self, text: str) -> str:
+        """移除知识星球页脚信息
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            清理后的文本
+        """
+        if not text:
+            return text
+            
+        cleaned_text = text
+        for pattern in self._re_footer_patterns:
+            cleaned_text = pattern.sub('', cleaned_text)
+        
+        # 清理末尾的多余空白
+        cleaned_text = cleaned_text.rstrip()
+        
+        return cleaned_text
+    
+    def _replace_smart_link(self, match):
+        """智能替换链接标签，区分图片和普通链接
+        
+        Args:
+            match: 正则匹配对象
+            
+        Returns:
+            HTML标签字符串
+        """
+        full_tag = match.group(0)
+        
+        # 提取href和title属性
+        href_match = self._re_href.search(full_tag)
+        title_match = self._re_title.search(full_tag)
+        
+        if href_match:
+            # URL解码
+            encoded_url = href_match.group(1)
+            url = urllib.parse.unquote(encoded_url)
+            
+            # 获取链接文本
+            if title_match:
+                link_text = urllib.parse.unquote(title_match.group(1))
+            else:
+                link_text = url
+            
+            # 判断是否是图片链接
+            if self._is_image_url(url):
+                return f'<img src="{url}" alt="{link_text}" style="max-width: 100%; height: auto;">'
+            else:
+                return f'<a href="{url}" target="_blank">{link_text}</a>'
+        else:
+            # 如果没有href，返回原文本
+            return full_tag
+    
+    def _is_image_url(self, url: str) -> bool:
+        """判断URL是否为图片链接
+        
+        Args:
+            url: URL字符串
+            
+        Returns:
+            是否为图片链接
+        """
+        if not url:
+            return False
+            
+        # 图片文件扩展名
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'}
+        
+        # 获取URL的路径部分（去除查询参数）
+        parsed = urlparse(url.lower())
+        path = parsed.path
+        
+        # 检查文件扩展名
+        for ext in image_extensions:
+            if path.endswith(ext):
+                return True
+                
+        # 检查是否包含常见的图片服务域名或路径模式
+        image_patterns = [
+            'qpic.cn',           # 知识星球图片域名
+            'images.',           # 常见图片子域名
+            'img.',              # 常见图片子域名
+            '/images/',          # 图片路径
+            '/img/',             # 图片路径
+            'imagecdn.',         # 图片CDN
+            'imgcdn.',           # 图片CDN
+        ]
+        
+        url_lower = url.lower()
+        for pattern in image_patterns:
+            if pattern in url_lower:
+                return True
+                
+        return False
+    
     def _exact_match(self, first_line: str, title: str) -> bool:
         """检查完全匹配"""
         return first_line.startswith(title.rstrip('…..'))
@@ -598,11 +717,10 @@ class ContentProcessor:
     
     def _fuzzy_match(self, first_line: str, title: str) -> bool:
         """检查模糊匹配（忽略标点符号）"""
-        import re
         clean_title = title.rstrip('…..')
         # 移除标点符号进行比较
-        title_clean = re.sub(r'[^\w\s]', '', clean_title)
-        first_line_clean = re.sub(r'[^\w\s]', '', first_line)
+        title_clean = self._re_punctuation.sub('', clean_title)
+        first_line_clean = self._re_punctuation.sub('', first_line)
         
         return (title_clean and 
                 first_line_clean.startswith(title_clean) and 
@@ -690,10 +808,9 @@ class ContentProcessor:
         
         # 方法1: 提取HTML格式的hashtag标签
         # 格式: <e type="hashtag" hid="xxx" title="%23标签名%23" />
-        html_tags = re.findall(r'<e type="hashtag"[^>]*title="([^"]*)"[^>]*/?>', text_content)
+        html_tags = self._re_hashtag_html.findall(text_content)
         for tag in html_tags:
             # 解码URL编码 (%23 = #)
-            import urllib.parse
             decoded_tag = urllib.parse.unquote(tag)
             # 移除首尾的#号
             clean_tag = decoded_tag.strip('#')
@@ -701,7 +818,7 @@ class ContentProcessor:
                 tags.append(clean_tag)
         
         # 方法2: 提取普通的#标签#格式
-        hashtags = re.findall(r'#([^#\s]+)#', text_content)
+        hashtags = self._re_hashtag_plain.findall(text_content)
         for tag in hashtags:
             tags.append(tag)
         

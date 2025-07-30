@@ -127,9 +127,42 @@ python3 zsxq_to_wordpress.py --mode=incremental
     "secret_key": "七牛云SecretKey（可选）",
     "bucket": "存储空间名称（可选）",
     "domain": "CDN域名（可选）"
+  },
+  "sync": {
+    "batch_size": 20,  // 每批次处理的主题数量（默认20）
+    "delay_seconds": 2,  // 请求间隔秒数（默认2秒）
+    "max_retries": 5,  // 最大重试次数（默认5次）
+    "fetch_article_details": true,  // 是否获取文章详细内容（默认true）
+    "detail_fetch_retries": 2  // 文章详情获取重试次数（默认2次）
   }
 }
 ```
+
+### sync配置说明
+
+同步配置项控制知识星球内容获取和处理的行为：
+
+- **`batch_size`**: 每批次处理的主题数量（默认：20）
+  - 建议范围：10-30
+  - 过大可能导致内存占用高，过小会增加总体同步时间
+  
+- **`delay_seconds`**: 请求之间的延迟秒数（默认：2秒）
+  - 用于避免触发知识星球的请求频率限制
+  - 建议范围：1-3秒
+  
+- **`max_retries`**: API请求失败时的最大重试次数（默认：5次）
+  - 适用于网络不稳定的情况
+  - 每次重试会有递增的等待时间
+  
+- **`fetch_article_details`**: 是否获取文章类型内容的详细信息（默认：true）
+  - 开启后会对每篇文章额外请求详细内容
+  - 确保获取到完整的文章正文和格式
+  - 关闭可提升同步速度，但可能丢失部分文章格式
+  
+- **`detail_fetch_retries`**: 文章详情获取的专用重试次数（默认：2次）
+  - 仅在`fetch_article_details`为true时生效
+  - 独立于`max_retries`，专门用于文章详情请求
+  - 较低的重试次数可避免因个别文章问题导致整体同步变慢
 
 ### 环境变量配置（推荐用于生产环境）
 
