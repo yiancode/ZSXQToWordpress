@@ -117,7 +117,9 @@ class SyncState:
         """
         last_time = self._state.get('last_sync_time')
         if last_time:
-            return datetime.fromisoformat(last_time)
+            # 导入日期解析函数
+            from content_processor import parse_datetime_safe
+            return parse_datetime_safe(last_time)
         return None
         
     def update_last_sync_time(self, sync_time: Optional[datetime] = None) -> None:

@@ -9,6 +9,39 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
 
+def parse_datetime_safe(date_string: str) -> datetime:
+    """安全解析日期时间字符串，处理各种时区格式
+    
+    Args:
+        date_string: 日期时间字符串
+        
+    Returns:
+        解析后的datetime对象
+    """
+    if not date_string:
+        raise ValueError("日期字符串不能为空")
+    
+    # 处理Z结尾的UTC时间
+    if date_string.endswith('Z'):
+        date_string = date_string.replace('Z', '+00:00')
+    
+    # 处理+HHMM格式的时区，转换为+HH:MM格式
+    import re
+    # 匹配形如 +0800 或 -0800 的时区格式
+    tz_pattern = r'([+-])(\d{2})(\d{2})$'
+    match = re.search(tz_pattern, date_string)
+    if match:
+        sign, hours, minutes = match.groups()
+        # 替换为标准格式 +HH:MM
+        standard_tz = f'{sign}{hours}:{minutes}'
+        date_string = re.sub(tz_pattern, standard_tz, date_string)
+    
+    try:
+        return datetime.fromisoformat(date_string)
+    except ValueError as e:
+        raise ValueError(f"无法解析日期时间字符串 '{date_string}': {e}")
+
+
 class ContentProcessor:
     """内容处理器"""
     
@@ -293,7 +326,7 @@ class ContentProcessor:
             # 如果没有内容，使用时间戳作为标题
             create_time = topic.get('create_time', '')
             if create_time:
-                dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+                dt = parse_datetime_safe(create_time)
                 title = f"{title_prefix} {dt.strftime('%m-%d %H:%M')}"
             else:
                 title = f"{title_prefix} 无标题内容"
@@ -423,7 +456,7 @@ class ContentProcessor:
             # 使用时间作为标题
             create_time = topic.get('create_time', '')
             if create_time:
-                dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+                dt = parse_datetime_safe(create_time)
                 title = dt.strftime('%Y年%m月%d日分享')
             else:
                 title = '无标题'
@@ -759,7 +792,7 @@ class ContentProcessor:
         # 添加来源说明
         create_time = article.get('create_time', '')
         if create_time:
-            dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+            dt = parse_datetime_safe(create_time)
             time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
             
             # 从配置中获取知识星球信息
