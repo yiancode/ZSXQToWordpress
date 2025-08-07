@@ -2,6 +2,17 @@
 
 一个将知识星球内容自动同步到WordPress的Python工具，支持定时自动同步，适合部署在宝塔面板等服务器环境。
 
+## 📚 文档导航
+
+| 文档类型 | 链接 | 描述 |
+|---------|------|------|
+| 🚀 **快速开始** | [README.md](#快速部署5分钟上线) | 项目概述和快速部署 |
+| 📋 **部署指南** | [docs/deployment/](./docs/deployment/) | 详细的部署文档和配置说明 |
+| ❓ **故障排除** | [docs/troubleshooting/](./docs/troubleshooting/) | 常见问题和解决方案 |
+| 🔧 **API文档** | [docs/api/](./docs/api/) | 接口定义和使用说明 |
+| 👨‍💻 **开发指南** | [docs/development/](./docs/development/) | 开发环境设置和贡献指南 |
+| 🔒 **安全文档** | [docs/security/](./docs/security/) | 安全配置和最佳实践 |
+
 ## 🚀 功能特性
 
 - ✅ **多种同步模式**：支持全量同步、增量同步和并发同步
@@ -303,6 +314,11 @@ python3 validate_config.py
 - WordPress连接状态  
 - 七牛云配置（如果启用）
 
+**详细使用方法请参考：**
+- [部署指南](./docs/deployment/README.md) - 完整的部署和配置说明
+- [故障排除](./docs/troubleshooting/README.md) - 常见问题解决方案
+- [API文档](./docs/api/README.md) - 接口使用说明
+
 ### 同步命令
 
 ```bash
@@ -381,52 +397,15 @@ ZSXQToWordpress/
 └── docs/                   # 文档目录
 ```
 
-## 🛡️ 故障排查
+## 📖 详细文档
 
-### 常见问题和解决方案
+如需了解更多信息，请参考：
 
-#### 1. 知识星球认证失败
-```bash
-# 错误：认证失败，请检查access_token是否有效
-# 解决：重新获取access_token（token会过期）
-```
-
-#### 2. WordPress连接失败  
-```bash
-# 错误：无法连接到WordPress XML-RPC
-# 解决：
-# - 确保WordPress启用了XML-RPC
-# - 检查URL是否正确（必须以/xmlrpc.php结尾）
-# - 验证用户名和密码
-```
-
-#### 3. 图片处理失败
-```bash
-# 错误：图片上传失败
-# 解决：
-# - 检查七牛云配置是否正确
-# - 确保网络连接正常
-# - 可以暂时禁用七牛云，使用原始图片链接
-```
-
-### 日志分析
-
-```bash
-# 查看详细日志
-tail -f zsxq_sync.log
-
-# 查看同步状态
-cat sync_state.json | python3 -m json.tool
-
-# 重置同步状态（慎用）
-rm sync_state.json
-```
-
-### 性能优化
-
-- 建议batch_size设置为10-20
-- delay_seconds设置为1-3秒
-- 大量内容首次同步时建议分批进行
+- **[部署指南](./docs/deployment/)** - 详细的部署文档，包括Docker、云服务器等部署方式
+- **[故障排除](./docs/troubleshooting/)** - 完整的故障排除指南和常见问题解决方案  
+- **[API文档](./docs/api/)** - 接口定义和使用说明
+- **[开发指南](./docs/development/)** - 开发环境设置和贡献指南
+- **[安全文档](./docs/security/)** - 安全配置和最佳实践
 
 ## 🔒 安全建议
 

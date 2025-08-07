@@ -125,7 +125,7 @@ class ZsxqToWordPressSync:
             self.logger.warning("七牛云未配置，图片将使用原始链接")
             
         # 内容处理器
-        self.content_processor = ContentProcessor(self.config.data)
+        self.content_processor = ContentProcessor(self.config.data, self.zsxq_client)
         
         # 同步状态管理
         self.sync_state = SyncState()

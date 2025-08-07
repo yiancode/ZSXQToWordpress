@@ -46,14 +46,16 @@ def parse_datetime_safe(date_string: str) -> datetime:
 class ContentProcessor:
     """内容处理器"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, zsxq_client=None):
         """初始化处理器
         
         Args:
             config: 配置信息，包含source部分用于生成来源链接
+            zsxq_client: 知识星球客户端，用于获取文章详情
         """
         self.logger = logging.getLogger(__name__)
         self.config = config or {}
+        self.zsxq_client = zsxq_client
         
         # 预编译常用正则表达式以提升性能
         self._re_mention = re.compile(r'<e type="mention"[^>]*>(@[^<]+)</e>')
@@ -157,8 +159,42 @@ class ContentProcessor:
         
         # 根据主题类型获取内容
         text_content = ''
+        has_article_link = False
+        
         if topic_type == 'talk' and 'talk' in topic:
-            text_content = topic['talk'].get('text', '')
+            talk_data = topic['talk']
+            text_content = talk_data.get('text', '')
+            
+            # 检查是否有文章链接，如果有则获取完整文章内容
+            if 'article' in talk_data and talk_data['article'] and self.zsxq_client:
+                article_data = talk_data['article']
+                article_url = article_data.get('article_url', '')
+                
+                if article_url:
+                    has_article_link = True
+                    try:
+                        # 从文章URL中提取topic_id
+                        import re
+                        topic_id_match = re.search(r'/topics/(\d+)', article_url)
+                        if topic_id_match:
+                            article_topic_id = topic_id_match.group(1)
+                            self.logger.info(f"检测到文章链接，获取完整内容: {article_topic_id}")
+                            
+                            # 获取完整文章详情
+                            full_article = self.zsxq_client.get_topic_detail(article_topic_id)
+                            if full_article and 'talk' in full_article:
+                                full_text = full_article['talk'].get('text', '')
+                                if full_text and len(full_text) > len(text_content):
+                                    text_content = full_text
+                                    self.logger.info(f"成功获取完整文章内容，长度: {len(text_content)}")
+                                    
+                                    # 如果完整文章有图片，也要获取
+                                    if full_article.get('images'):
+                                        topic['_full_article_images'] = full_article.get('images', [])
+                                        
+                    except Exception as e:
+                        self.logger.warning(f"获取文章详情失败: {e}，使用原始摘要内容")
+                        
         elif topic_type == 'q&a-question' and 'question' in topic:
             text_content = topic['question'].get('text', '')
         elif topic_type == 'q&a-answer' and 'answer' in topic:
@@ -379,8 +415,8 @@ class ContentProcessor:
         # 处理话题标签
         processed = self._re_hashtag.sub(r'#\1#', processed)
         
-        # 使用智能链接处理方式
-        processed = self._re_web_link.sub(self._replace_smart_link, processed)
+        # 使用简化链接处理方式，避免WordPress主题解析问题（短内容处理）
+        processed = self._re_web_link.sub(self._replace_simple_link, processed)
         
         # 短内容保持简洁，只转换必要的换行
         processed = processed.replace('\n\n', '</p><p>')
@@ -423,8 +459,8 @@ class ContentProcessor:
         if lines and lines[0]:
             first_line = lines[0].strip()
             
-            # 处理知识星球HTML标签
-            first_line = self._process_zsxq_tags(first_line)
+            # 处理知识星球HTML标签（仅用于标题，去除格式标记）
+            first_line = self._process_zsxq_tags_for_title(first_line)
             
             # 改进的标题判断逻辑
             if len(first_line) <= 80 and not first_line.endswith(('。', '！', '？', '，', '、')):
@@ -505,8 +541,8 @@ class ContentProcessor:
         # 处理话题标签
         processed = self._re_hashtag.sub(r'#\1#', processed)
         
-        # 使用智能链接处理方式
-        processed = self._re_web_link.sub(self._replace_smart_link, processed)
+        # 使用简化链接处理方式，避免WordPress主题解析问题（文章内容处理）
+        processed = self._re_web_link.sub(self._replace_simple_link, processed)
         
         # 处理换行 - 保持段落结构
         paragraphs = processed.split('\n\n')
@@ -594,16 +630,45 @@ class ContentProcessor:
         processed = text
         
         # 处理粗体标签 <e type="text_bold" title="文本内容" />
-        processed = self._re_text_bold.sub(r'**\1**', processed)
+        processed = self._re_text_bold.sub(lambda m: f'**{urllib.parse.unquote(m.group(1))}**', processed)
         
         # 处理斜体标签 <e type="text_italic" title="文本内容" />
-        processed = self._re_text_italic.sub(r'*\1*', processed)
+        processed = self._re_text_italic.sub(lambda m: f'*{urllib.parse.unquote(m.group(1))}*', processed)
         
         # 处理删除线标签 <e type="text_delete" title="文本内容" />
-        processed = self._re_text_delete.sub(r'~~\1~~', processed)
+        processed = self._re_text_delete.sub(lambda m: f'~~{urllib.parse.unquote(m.group(1))}~~', processed)
         
-        # 处理其他未知的e标签，提取title内容
-        processed = self._re_text_generic.sub(r'\1', processed)
+        # 处理其他未知的e标签，提取title内容并解码
+        processed = self._re_text_generic.sub(lambda m: urllib.parse.unquote(m.group(1)), processed)
+        
+        return processed
+    
+    def _process_zsxq_tags_for_title(self, text: str) -> str:
+        """处理知识星球特有的HTML标签（用于标题，不添加格式标记）
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            处理后的纯文本标题
+        """
+        if not text:
+            return text
+            
+        # 处理文本格式标签，直接提取内容，不加格式标记
+        processed = text
+        
+        # 处理粗体标签，只提取文本内容
+        processed = self._re_text_bold.sub(lambda m: urllib.parse.unquote(m.group(1)), processed)
+        
+        # 处理斜体标签，只提取文本内容
+        processed = self._re_text_italic.sub(lambda m: urllib.parse.unquote(m.group(1)), processed)
+        
+        # 处理删除线标签，只提取文本内容
+        processed = self._re_text_delete.sub(lambda m: urllib.parse.unquote(m.group(1)), processed)
+        
+        # 处理其他未知的e标签，提取title内容并解码
+        processed = self._re_text_generic.sub(lambda m: urllib.parse.unquote(m.group(1)), processed)
         
         return processed
     
@@ -627,6 +692,42 @@ class ContentProcessor:
         cleaned_text = cleaned_text.rstrip()
         
         return cleaned_text
+    
+    def _replace_simple_link(self, match):
+        """简化的链接替换，避免WordPress主题解析问题
+        
+        Args:
+            match: 正则匹配对象
+            
+        Returns:
+            HTML标签字符串
+        """
+        full_tag = match.group(0)
+        
+        # 提取href和title属性
+        href_match = self._re_href.search(full_tag)
+        title_match = self._re_title.search(full_tag)
+        
+        if href_match:
+            # URL解码
+            encoded_url = href_match.group(1)
+            url = urllib.parse.unquote(encoded_url)
+            
+            # 获取链接文本
+            if title_match:
+                link_text = urllib.parse.unquote(title_match.group(1))
+            else:
+                link_text = url
+            
+            # 判断是否是图片链接 - 对图片使用简单的文本显示避免解析问题
+            if self._is_image_url(url):
+                return f'[图片: {url}]'
+            else:
+                # 对于普通链接，也使用简化格式
+                return f'<a href="{url}">{link_text}</a>'
+        else:
+            # 如果没有href，返回原文本
+            return full_tag
     
     def _replace_smart_link(self, match):
         """智能替换链接标签，区分图片和普通链接
@@ -656,7 +757,7 @@ class ContentProcessor:
             
             # 判断是否是图片链接
             if self._is_image_url(url):
-                return f'<img src="{url}" alt="{link_text}" style="max-width: 100%; height: auto;">'
+                return f'<img src="{url}" alt="{link_text}" class="wp-image">'
             else:
                 return f'<a href="{url}" target="_blank">{link_text}</a>'
         else:
@@ -777,6 +878,12 @@ class ContentProcessor:
         
         # 使用递归方法提取所有图片
         images = extract_image_urls(topic)
+        
+        # 如果有完整文章的图片，也要添加进来
+        if '_full_article_images' in topic:
+            full_article_images = extract_image_urls({'images': topic['_full_article_images']})
+            images.extend(full_article_images)
+            
         return images
         
     def _extract_tags(self, topic: Dict[str, Any]) -> List[str]:
@@ -900,26 +1007,30 @@ class ContentProcessor:
             image_html = []
             for original_url in article['images']:
                 new_url = processed_images.get(original_url, original_url)
-                image_html.append(f'<img src="{new_url}" alt="图片" style="max-width: 100%; height: auto;">')
+                # 使用标准的img标签，避免WordPress主题解析问题
+                image_html.append(f'<img src="{new_url}" alt="图片">')
                 
-            # 将图片添加到内容末尾
+            # 将图片添加到内容末尾，每个图片独立成段
             if image_html:
-                content += '\n\n' + '\n'.join(image_html)
+                content += '\n\n<p>' + '</p>\n\n<p>'.join(image_html) + '</p>'
                 
-        # 添加来源说明
-        create_time = article.get('create_time', '')
-        if create_time:
-            dt = parse_datetime_safe(create_time)
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # 从配置中获取知识星球信息
-            source_config = self.config.get('source', {})
-            source_name = source_config.get('name', '知识星球')
-            source_url = source_config.get('url', '')
-            
-            if source_url:
-                content += f'\n\n<p style="color: #666; font-size: 14px;">—— 发布于 <a href="{source_url}" target="_blank">{source_name}</a> {time_str}</p>'
-            else:
-                content += f'\n\n<p style="color: #666; font-size: 14px;">—— 发布于 {source_name} {time_str}</p>'
+        # 根据配置决定是否添加来源说明
+        add_source_footer = self.config.get('sync', {}).get('add_source_footer', False)
+        
+        if add_source_footer:
+            create_time = article.get('create_time', '')
+            if create_time:
+                dt = parse_datetime_safe(create_time)
+                time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 从配置中获取知识星球信息
+                source_config = self.config.get('source', {})
+                source_name = source_config.get('name', '知识星球')
+                source_url = source_config.get('url', '')
+                
+                if source_url:
+                    content += f'\n\n<p class="post-meta">—— 发布于 <a href="{source_url}" target="_blank">{source_name}</a> {time_str}</p>'
+                else:
+                    content += f'\n\n<p class="post-meta">—— 发布于 {source_name} {time_str}</p>'
             
         return content
