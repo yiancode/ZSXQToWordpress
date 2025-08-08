@@ -167,6 +167,56 @@ export HTTPS_PROXY=http://proxy.company.com:8080
 
 ## 同步问题
 
+### Q: 内容显示问题（最新修复 v1.1.0）
+
+**现象**: doip.cc等WordPress站点上出现以下问题：
+- 图片显示为HTML标签而不是实际图片
+- hashtag标签显示为原始HTML代码
+- 自定义元素 `<e type="image">` 和 `<e type="hashtag">` 无法正确渲染
+- 长内容展开功能不完善
+
+**错误示例**:
+```html
+<!-- 在页面上显示为文本而不是图片 -->
+<e type="image" src="https://cdn.doip.cc/image.jpg" title="%E5%9B%BE%E7%89%87"/>
+
+<!-- hashtag标签也显示为原始代码 -->
+<e type="hashtag" hid="123" title="%23AI%E7%BC%96%E7%A8%8B%23"/>
+```
+
+**解决方案** (已在v1.1.0中修复):
+
+1. **自动标签转换**:
+   - `<e type="image">` 自动转换为标准 `<img>` 标签
+   - `<e type="hashtag">` 自动转换为 `#标签#` 文本格式
+   - URL自动解码处理
+
+2. **在content_processor.py中的修复**:
+```python
+# 图片标签处理
+self._re_image_link = re.compile(r'<e type="image"[^>]*/>')
+processed = self._re_image_link.sub(self._replace_image_tag, processed)
+
+# hashtag标签处理  
+processed = self._process_hashtag_tags(processed)
+```
+
+3. **验证修复效果**:
+```bash
+# 同步测试内容
+ZSXQ_TEST_MODE=1 ZSXQ_MAX_TOPICS=5 python3 zsxq_to_wordpress.py --mode=full
+
+# 检查WordPress站点
+# - 图片正常显示
+# - hashtag标签正常显示
+# - 无HTML源代码显示
+```
+
+**注意事项**:
+- 这些修复仅影响新同步的内容
+- 已同步的历史内容不会被自动更新
+- 如需更新历史内容，可删除sync_state.json中的相关记录后重新同步
+
 ### Q: WordPress主题HTML渲染问题
 
 **现象**: 在WordPress前端页面中出现以下问题：

@@ -61,6 +61,7 @@ class ContentProcessor:
         self._re_mention = re.compile(r'<e type="mention"[^>]*>(@[^<]+)</e>')
         self._re_hashtag = re.compile(r'<e type="hashtag"[^>]*>#([^<]+)#</e>')
         self._re_web_link = re.compile(r'<e type="web"[^>]*/>')
+        self._re_image_link = re.compile(r'<e type="image"[^>]*/>')  # 新增图片标签处理
         self._re_text_bold = re.compile(r'<e type="text_bold" title="([^"]*)"[^>]*/>')
         self._re_text_italic = re.compile(r'<e type="text_italic" title="([^"]*)"[^>]*/>')
         self._re_text_delete = re.compile(r'<e type="text_delete" title="([^"]*)"[^>]*/>')
@@ -249,7 +250,6 @@ class ContentProcessor:
             '_sync_title_disabled': not sync_title  # 传递标题同步禁用标记
         }
         
-        
         return article
     
     def _process_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
@@ -314,9 +314,6 @@ class ContentProcessor:
             topic_post_type = post_types.get('topic', 'moment')
         else:
             topic_post_type = 'post'  # 使用标准文章类型
-            
-        # 添加post_type设置的调试信息
-        self.logger.info(f"[DEBUG] post_type设置 - use_custom_post_type: {use_custom_post_type}, topic_post_type: {topic_post_type}, 配置中的topic类型: {post_types.get('topic', 'moment')}")
         
         # 构建短内容数据
         short_content = {
@@ -333,7 +330,6 @@ class ContentProcessor:
             'raw_data': topic,  # 保留原始数据
             '_sync_title_disabled': not sync_title  # 传递标题同步禁用标记
         }
-        
         
         return short_content
     
@@ -412,8 +408,11 @@ class ContentProcessor:
         # 处理@提及 - 转换为普通文本
         processed = self._re_mention.sub(r'\1', text)
         
-        # 处理话题标签
-        processed = self._re_hashtag.sub(r'#\1#', processed)
+        # 处理图片标签 - 优先处理图片，避免被link处理覆盖
+        processed = self._re_image_link.sub(self._replace_image_tag, processed)
+        
+        # 处理话题标签 - 转换为可点击的标签
+        processed = self._process_hashtag_tags(processed)
         
         # 使用简化链接处理方式，避免WordPress主题解析问题（短内容处理）
         processed = self._re_web_link.sub(self._replace_simple_link, processed)
@@ -425,6 +424,78 @@ class ContentProcessor:
         # 包装在段落标签中
         if processed and not processed.startswith('<p>'):
             processed = f'<p>{processed}</p>'
+        
+        return processed
+    
+    def _replace_image_tag(self, match):
+        """替换图片标签，转换为标准的img标签
+        
+        Args:
+            match: 正则匹配对象
+            
+        Returns:
+            标准的img标签或图片链接
+        """
+        full_tag = match.group(0)
+        
+        # 提取src和title属性
+        src_match = re.search(r'src="([^"]*)"', full_tag)
+        title_match = re.search(r'title="([^"]*)"', full_tag)
+        
+        if src_match:
+            # URL解码
+            encoded_url = src_match.group(1)
+            image_url = urllib.parse.unquote(encoded_url)
+            
+            # 获取图片文本（alt属性）
+            if title_match:
+                alt_text = urllib.parse.unquote(title_match.group(1))
+            else:
+                alt_text = '图片'
+            
+            # 返回标准的img标签
+            return f'<img src="{image_url}" alt="{alt_text}">'
+        else:
+            # 如果没有src，返回空字符串
+            return ''
+    
+    def _process_hashtag_tags(self, text: str) -> str:
+        """处理hashtag标签，转换为简单的标签文本
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            处理后的文本
+        """
+        def replace_hashtag(match):
+            full_tag = match.group(0)
+            
+            # 提取title属性（含有hashtag内容）
+            title_match = re.search(r'title="([^"]*)"', full_tag)
+            
+            if title_match:
+                # 解码URL编码的hashtag（%23 = #）
+                encoded_hashtag = title_match.group(1)
+                hashtag = urllib.parse.unquote(encoded_hashtag)
+                
+                # 移除首尾的#号并清理
+                clean_hashtag = hashtag.strip('#')
+                
+                if clean_hashtag:
+                    # 返回简单的hashtag文本
+                    return f'#{clean_hashtag}#'
+                else:
+                    return '#'
+            else:
+                # 如果没有title属性，返回空的hashtag
+                return ''
+        
+        # 处理 <e type="hashtag"> 标签
+        processed = re.sub(r'<e type="hashtag"[^>]*/?>', replace_hashtag, text)
+        
+        # 保留原有的简单hashtag处理逻辑（作为后备）
+        processed = self._re_hashtag.sub(r'#\1#', processed)
         
         return processed
         
@@ -538,8 +609,11 @@ class ContentProcessor:
         # 处理@提及 - 转换为普通文本
         processed = re.sub(r'<e type="mention"[^>]*>(@[^<]+)</e>', r'\1', processed)
         
-        # 处理话题标签
-        processed = self._re_hashtag.sub(r'#\1#', processed)
+        # 处理图片标签 - 优先处理图片，避免被link处理覆盖
+        processed = self._re_image_link.sub(self._replace_image_tag, processed)
+        
+        # 处理话题标签 - 转换为可点击的标签
+        processed = self._process_hashtag_tags(processed)
         
         # 使用简化链接处理方式，避免WordPress主题解析问题（文章内容处理）
         processed = self._re_web_link.sub(self._replace_simple_link, processed)
@@ -984,8 +1058,6 @@ class ContentProcessor:
         if not categories:
             categories.append(default_category)
             
-        # 调试日志：输出分类设置
-        self.logger.info(f"[DEBUG] 内容类型: {content_type}, 默认分类: {default_category}, 最终分类: {categories}")
             
         return categories
         
@@ -1002,12 +1074,16 @@ class ContentProcessor:
         """
         content = article['content']
         
-        # 如果有图片，将其插入到内容中
+        # 替换内容中的图片URL
+        for original_url, new_url in processed_images.items():
+            content = content.replace(original_url, new_url)
+        
+        # 如果有图片，将其添加到内容中
         if article['images']:
             image_html = []
             for original_url in article['images']:
                 new_url = processed_images.get(original_url, original_url)
-                # 使用标准的img标签，避免WordPress主题解析问题
+                # 使用标准的img标签
                 image_html.append(f'<img src="{new_url}" alt="图片">')
                 
             # 将图片添加到内容末尾，每个图片独立成段

@@ -1,11 +1,55 @@
-# ZSXQToWordpress v1.1 开发进度文档
+# ZSXQToWordpress v1.1.1 开发进度文档
 
 ## 项目概述
 
-- **项目名称**：知识星球到WordPress同步工具 v1.1
+- **项目名称**：知识星球到WordPress同步工具 v1.1.1
 - **开发周期**：持续迭代开发
-- **当前状态**：生产稳定版本，已解决前端显示问题
+- **当前状态**：生产稳定版本，已解决内容显示问题和代码优化
 - **部署目标**：宝塔面板环境
+
+## 最新更新记录 (v1.1.1)
+
+### 2025-08-09: 内容显示问题修复与代码优化 🎉
+
+**问题分析**：
+
+通过Playwright MCP工具分析doip.cc网站发现：
+
+- 自定义HTML标签 `<e type="image">` 和 `<e type="hashtag">` 无法正确渲染
+- 图片在列表页面显示为HTML标签文本而不是实际图片
+- hashtag标签显示为原始HTML代码
+- 长内容展开功能不完善
+
+**修复方案**：
+
+1. **内容处理器增强** (`content_processor.py`):
+   - 新增 `_re_image_link` 正则表达式处理图片标签
+   - 新增 `_replace_image_tag()` 方法将 `<e type="image">` 转换为标准 `<img>` 标签
+   - 新增 `_process_hashtag_tags()` 方法将 `<e type="hashtag">` 转换为 `#标签#` 文本
+   - 自动URL解码处理 (%23 → #)
+
+2. **图片处理优化**:
+   - 改进 `format_article_with_images()` 方法
+   - 支持内嵌图片URL替换
+   - 简化图片HTML输出格式
+
+3. **代码清理与优化**:
+   - 删除了约200行不必要的代码
+   - 移除复杂的CSS/JS注入功能
+   - 简化hashtag标签处理逻辑
+   - 清理所有DEBUG级别的调试输出
+
+4. **文档同步更新**:
+   - 新增 `docs/api/content-processor.md` API文档
+   - 更新 `docs/troubleshooting/README.md` 故障排除指南
+   - 更新 `CHANGELOG.md` 版本日志
+
+**验证结果**：
+- ✅ 自定义HTML标签正确转换为标准元素
+- ✅ 图片正常显示，使用七牛云CDN链接
+- ✅ hashtag标签显示为简洁文本格式
+- ✅ 无HTML源代码显示问题
+- ✅ 成功同步多条包含图片的内容
 
 ## 最新更新记录 (v1.1)
 

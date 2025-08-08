@@ -72,12 +72,24 @@ export SSL_VERIFY=true
 5. **主控制器**
    - `zsxq_to_wordpress.py`: 协调各模块，实现三种同步模式
 
+6. **辅助模块**
+   - `config_manager.py`: 配置文件管理，支持环境变量覆盖
+   - `log_utils.py`: 敏感信息过滤，确保日志安全
+   - `config_generator.py`: 交互式配置文件生成助手
+   - `test_optimizations.py`: 性能测试工具
+
 ### 关键设计模式
 - **策略模式**: 不同同步模式的实现(全量/增量/并发)
 - **依赖注入**: 通过接口实现模块解耦
 - **线程池**: 并发模式下的批量处理
 
 ## 开发注意事项
+
+### 代码架构原则
+- 所有核心模块都基于`interfaces.py`中定义的抽象接口
+- 遵循单一职责原则，每个模块负责特定功能
+- 使用依赖注入实现模块间解耦
+- 支持通过环境变量覆盖配置文件中的敏感信息
 
 ### API调用限制
 - 知识星球API有访问限制，默认请求间隔1秒
@@ -86,8 +98,9 @@ export SSL_VERIFY=true
 
 ### 错误处理
 - 所有模块都实现了重试机制（默认3次）
-- 日志中会自动过滤敏感信息（密码、token等）
+- 日志中会自动过滤敏感信息（密码、token等）通过`log_utils.py`模块
 - 网络错误会自动重试，API错误会记录并跳过
+- 支持并发处理时的线程安全状态管理
 
 ### 状态文件
 - `sync_state.json`: 记录已同步的topic_id
@@ -111,6 +124,12 @@ ZSXQ_TEST_MODE=1 ZSXQ_MAX_TOPICS=5 python3 zsxq_to_wordpress.py
 
 # 检查同步状态
 cat sync_state.json | python -m json.tool
+
+# 配置生成助手（交互式配置）
+python3 config_generator.py
+
+# 性能测试（验证优化效果）
+python3 test_optimizations.py
 ```
 
 ### 常见问题排查
